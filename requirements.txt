@@ -2,6 +2,9 @@ Flask==3.0.0
 Flask-CORS==4.0.0
 Flask-SQLAlchemy==3.1.1
 Flask-JWT-Extended==4.5.3
+Flask-SocketIO==5.3.5
+Flask-Mail==0.9.1
+python-socketio==5.10.0
 python-dotenv==1.0.0
 Pillow==10.1.0
 opencv-python==4.8.1.78
@@ -17,5 +20,6 @@ langchain==0.1.9
 langchain-anthropic==0.1.4
 langchain-openai==0.0.6
 gunicorn==21.2.0
+eventlet==0.33.3
 rembg==2.0.50
 onnxruntime==1.16.3

@@ -9,6 +9,7 @@ import json
 import hashlib
 import re
 import tempfile
+import random
 import cv2
 import numpy as np
 from PIL import Image
@@ -81,6 +82,9 @@ class User(db.Model):
     balance = db.Column(db.Float, default=0.0)
     trust_score = db.Column(db.Float, default=5.0)
     google_id = db.Column(db.String(100), unique=True)
+    phone_number = db.Column(db.String(20), unique=True)
+    phone_verified = db.Column(db.Boolean, default=False)
+    account_type = db.Column(db.String(20), default='buyer')
     upi_id = db.Column(db.String(100))
     bank_account = db.Column(db.String(200))
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
@@ -160,6 +164,27 @@ class Withdrawal(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     processed_at = db.Column(db.DateTime)
 
+class Message(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    order_id = db.Column(db.Integer, db.ForeignKey('order.id'), nullable=False)
+    sender_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    content = db.Column(db.Text, nullable=False)
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+    is_read = db.Column(db.Boolean, default=False)
+    message_type = db.Column(db.String(20), default='text')  # text, file, system
+
+class DeliveryVerification(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    order_id = db.Column(db.Integer, db.ForeignKey('order.id'), nullable=False)
+    verification_status = db.Column(db.String(20), default='pending')  # pending, approved, rejected
+    quality_score = db.Column(db.Float)
+    ai_confidence = db.Column(db.Float)
+    ai_analysis = db.Column(db.Text)
+    issues_found = db.Column(db.Text)  # JSON
+    auto_approved = db.Column(db.Boolean, default=False)
+    verified_at = db.Column(db.DateTime)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
 class ContentFingerprint(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     gig_id = db.Column(db.Integer, db.ForeignKey('gig.id'), nullable=False)
@@ -172,6 +197,16 @@ class PlatformFee(db.Model):
     order_id = db.Column(db.Integer, db.ForeignKey('order.id'), nullable=False)
     amount = db.Column(db.Float, nullable=False)
     recipient_upi = db.Column(db.String(100), nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+class PhoneOTP(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    phone_number = db.Column(db.String(20), nullable=False, index=True)
+    otp_code = db.Column(db.String(6), nullable=False)
+    purpose = db.Column(db.String(30), default='signup')
+    expires_at = db.Column(db.DateTime, nullable=False)
+    verified = db.Column(db.Boolean, default=False)
+    consumed = db.Column(db.Boolean, default=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 # Full Fiverr-class marketplace APIs (registered before routes use helpers)
@@ -188,6 +223,7 @@ def _migrate_schema():
     insp = inspect(db.engine)
     cols_order = {c['name'] for c in insp.get_columns('order')} if insp.has_table('order') else set()
     cols_gig = {c['name'] for c in insp.get_columns('gig')} if insp.has_table('gig') else set()
+    cols_user = {c['name'] for c in insp.get_columns('user')} if insp.has_table('user') else set()
     alters = []
     order_new = {
         'delivered_at': 'DATETIME', 'buyer_confirmed': 'BOOLEAN DEFAULT 0',
@@ -201,12 +237,19 @@ def _migrate_schema():
         'ai_quality_score': 'FLOAT DEFAULT 0', 'is_verified_listing': 'BOOLEAN DEFAULT 0',
         'flagged_fake': 'BOOLEAN DEFAULT 0', 'ai_scan_notes': 'TEXT',
     }
+    user_new = {
+        'phone_number': 'VARCHAR(20)', 'phone_verified': 'BOOLEAN DEFAULT 0',
+        'account_type': "VARCHAR(20) DEFAULT 'buyer'",
+    }
     for name, typ in order_new.items():
         if name not in cols_order:
             alters.append(f'ALTER TABLE "order" ADD COLUMN {name} {typ}')
     for name, typ in gig_new.items():
         if name not in cols_gig:
             alters.append(f'ALTER TABLE gig ADD COLUMN {name} {typ}')
+    for name, typ in user_new.items():
+        if name not in cols_user:
+            alters.append(f'ALTER TABLE "user" ADD COLUMN {name} {typ}')
     with db.engine.connect() as conn:
         for sql in alters:
             try:
@@ -228,6 +271,34 @@ def release_escrow_order(order, method):
     update_gig_rating(order.gig_id)
     update_seller_trust_score(order.seller_id)
     return platform_fee, seller_payout
+
+
+def serialize_user(user):
+    return {
+        'id': user.id,
+        'email': user.email,
+        'username': user.username,
+        'full_name': user.full_name,
+        'is_seller': user.is_seller,
+        'balance': user.balance,
+        'trust_score': user.trust_score,
+        'profile_image': user.profile_image,
+        'upi_id': user.upi_id,
+        'phone_number': user.phone_number,
+        'phone_verified': bool(user.phone_verified),
+        'account_type': user.account_type or ('seller' if user.is_seller else 'buyer'),
+    }
+
+
+def normalize_phone_number(value):
+    digits = re.sub(r'\D', '', value or '')
+    if len(digits) == 10:
+        return f'+91{digits}'
+    if len(digits) == 12 and digits.startswith('91'):
+        return f'+{digits}'
+    if len(digits) >= 10:
+        return f'+{digits}'
+    raise ValueError('Enter a valid phone number')
 
 
 def run_ai_escrow_verify(order_id, app_instance):
@@ -484,66 +555,73 @@ def update_seller_trust_score(user_id):
 @app.route('/api/auth/register', methods=['POST'])
 def register():
     data = request.json
+    phone_number = normalize_phone_number(data.get('phone_number', ''))
     
     if User.query.filter_by(email=data['email']).first():
         return jsonify({'error': 'Email already registered'}), 400
     
     if User.query.filter_by(username=data['username']).first():
         return jsonify({'error': 'Username already taken'}), 400
+
+    if User.query.filter_by(phone_number=phone_number).first():
+        return jsonify({'error': 'Phone number already registered'}), 400
+
+    otp_code = (data.get('otp_code') or '').strip()
+    otp_record = PhoneOTP.query.filter_by(
+        phone_number=phone_number,
+        otp_code=otp_code,
+        purpose='signup',
+        verified=True,
+        consumed=False
+    ).order_by(PhoneOTP.created_at.desc()).first()
+    if not otp_record or otp_record.expires_at < datetime.utcnow():
+        return jsonify({'error': 'Phone OTP verification required'}), 400
     
     user = User(
         email=data['email'],
         username=data['username'],
         full_name=data.get('full_name', ''),
-        password_hash=generate_password_hash(data['password'])
+        password_hash=generate_password_hash(data['password']),
+        phone_number=phone_number,
+        phone_verified=True,
+        account_type='buyer'
     )
     
     db.session.add(user)
+    otp_record.consumed = True
     db.session.commit()
     
     access_token = create_access_token(identity=user.id, expires_delta=timedelta(days=30))
     
     return jsonify({
         'token': access_token,
-        'user': {
-            'id': user.id,
-            'email': user.email,
-            'username': user.username,
-            'full_name': user.full_name,
-            'is_seller': user.is_seller,
-            'balance': user.balance,
-            'trust_score': user.trust_score
-        }
+        'user': serialize_user(user)
     }), 201
 
 @app.route('/api/auth/login', methods=['POST'])
 def login():
     data = request.json
-    user = User.query.filter_by(email=data['email']).first()
+    identifier = (data.get('email') or '').strip()
+    user = User.query.filter_by(email=identifier).first()
+    if not user:
+        user = User.query.filter_by(username=identifier).first()
     
-    if not user or not check_password_hash(user.password_hash, data['password']):
+    if not user or not user.password_hash or not check_password_hash(user.password_hash, data['password']):
         return jsonify({'error': 'Invalid credentials'}), 401
     
     access_token = create_access_token(identity=user.id, expires_delta=timedelta(days=30))
     
     return jsonify({
         'token': access_token,
-        'user': {
-            'id': user.id,
-            'email': user.email,
-            'username': user.username,
-            'full_name': user.full_name,
-            'is_seller': user.is_seller,
-            'balance': user.balance,
-            'trust_score': user.trust_score,
-            'profile_image': user.profile_image
-        }
+        'user': serialize_user(user)
     })
 
 @app.route('/api/auth/google', methods=['POST'])
 def google_auth():
     """Google OAuth login"""
     try:
+        if not GOOGLE_CLIENT_ID:
+            return jsonify({'error': 'Google OAuth is not configured on the server'}), 400
         token = request.json['token']
         idinfo = id_token.verify_oauth2_token(token, google_requests.Request(), GOOGLE_CLIENT_ID)
         
@@ -565,7 +643,8 @@ def google_auth():
                     username=username,
                     full_name=name,
                     google_id=google_id,
-                    profile_image=picture
+                    profile_image=picture,
+                    account_type='buyer'
                 )
                 db.session.add(user)
         
@@ -575,16 +654,7 @@ def google_auth():
         
         return jsonify({
             'token': access_token,
-            'user': {
-                'id': user.id,
-                'email': user.email,
-                'username': user.username,
-                'full_name': user.full_name,
-                'is_seller': user.is_seller,
-                'balance': user.balance,
-                'trust_score': user.trust_score,
-                'profile_image': user.profile_image
-            }
+            'user': serialize_user(user)
         })
     except Exception as e:
         return jsonify({'error': str(e)}), 400
@@ -595,16 +665,183 @@ def get_current_user():
     user_id = get_jwt_identity()
     user = User.query.get(user_id)
     
+    return jsonify(serialize_user(user))
+
+
+@app.route('/api/auth/otp/request', methods=['POST'])
+def request_phone_otp():
+    data = request.json or {}
+    try:
+        phone_number = normalize_phone_number(data.get('phone_number', ''))
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+
+    if User.query.filter_by(phone_number=phone_number).first():
+        return jsonify({'error': 'Phone number already registered'}), 400
+
+    PhoneOTP.query.filter_by(phone_number=phone_number, consumed=False).update({'consumed': True})
+    otp_code = f'{random.randint(0, 999999):06d}'
+    otp = PhoneOTP(
+        phone_number=phone_number,
+        otp_code=otp_code,
+        purpose='signup',
+        expires_at=datetime.utcnow() + timedelta(minutes=10),
+    )
+    db.session.add(otp)
+    db.session.commit()
+
+    response = {
+        'message': 'OTP generated',
+        'expires_in_seconds': 600,
+        'dev_mode': True,
+    }
+    if os.environ.get('OTP_SMS_PROVIDER', '').strip():
+        response['message'] = 'OTP sent'
+        response['dev_mode'] = False
+    else:
+        response['otp_code'] = otp_code
+        print(f'[OTP DEV] {phone_number}: {otp_code}')
+    return jsonify(response)
+
+
+@app.route('/api/auth/otp/verify', methods=['POST'])
+def verify_phone_otp():
+    data = request.json or {}
+    try:
+        phone_number = normalize_phone_number(data.get('phone_number', ''))
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+
+    otp_code = (data.get('otp_code') or '').strip()
+    otp = PhoneOTP.query.filter_by(
+        phone_number=phone_number,
+        otp_code=otp_code,
+        purpose='signup',
+        consumed=False
+    ).order_by(PhoneOTP.created_at.desc()).first()
+    if not otp or otp.expires_at < datetime.utcnow():
+        return jsonify({'error': 'Invalid or expired OTP'}), 400
+
+    otp.verified = True
+    db.session.commit()
+    return jsonify({'message': 'Phone number verified', 'phone_number': phone_number})
+
+# ==================== FILE UPLOAD ROUTES ====================
+
+@app.route('/api/upload/video', methods=['POST'])
+@jwt_required()
+def upload_video():
+    """Upload video file"""
+    if 'video' not in request.files:
+        return jsonify({'error': 'No video file provided'}), 400
+    
+    video = request.files['video']
+    if video.filename == '':
+        return jsonify({'error': 'No video selected'}), 400
+    
+    # Check file extension
+    allowed_extensions = {'mp4', 'mov', 'avi', 'mkv', 'webm'}
+    ext = video.filename.rsplit('.', 1)[1].lower() if '.' in video.filename else ''
+    if ext not in allowed_extensions:
+        return jsonify({'error': 'Invalid video format'}), 400
+    
+    # Generate unique filename
+    user_id = get_jwt_identity()
+    timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
+    filename = f"video_{user_id}_{timestamp}.{ext}"
+    filepath = os.path.join(UPLOAD_FOLDER, filename)
+    
+    # Save file
+    video.save(filepath)
+    
+    # Return URL
+    video_url = f"/uploads/{filename}"
+    return jsonify({'url': video_url, 'filename': filename})
+
+@app.route('/api/upload/image', methods=['POST'])
+@jwt_required()
+def upload_image():
+    """Upload image file (thumbnail)"""
+    if 'image' not in request.files:
+        return jsonify({'error': 'No image file provided'}), 400
+    
+    image = request.files['image']
+    if image.filename == '':
+        return jsonify({'error': 'No image selected'}), 400
+    
+    # Check file extension
+    allowed_extensions = {'jpg', 'jpeg', 'png', 'gif', 'webp'}
+    ext = image.filename.rsplit('.', 1)[1].lower() if '.' in image.filename else ''
+    if ext not in allowed_extensions:
+        return jsonify({'error': 'Invalid image format'}), 400
+    
+    # Generate unique filename
+    user_id = get_jwt_identity()
+    timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
+    filename = f"thumb_{user_id}_{timestamp}.{ext}"
+    filepath = os.path.join(UPLOAD_FOLDER, filename)
+    
+    # Save file
+    image.save(filepath)
+    
+    # Return URL
+    image_url = f"/uploads/{filename}"
+    return jsonify({'url': image_url, 'filename': filename})
+
+@app.route('/uploads/<filename>')
+def serve_upload(filename):
+    """Serve uploaded files"""
+    return send_file(os.path.join(UPLOAD_FOLDER, filename))
+
+# ==================== AI ANALYSIS ROUTES ====================
+
+@app.route('/api/ai/analyze-gig', methods=['POST'])
+@jwt_required()
+def analyze_gig():
+    """AI analyzes gig before publishing"""
+    data = request.json
+    
+    try:
+        title = sanitize_text(data.get('title', ''), 200)
+        description = sanitize_text(data.get('description', ''), 8000)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    
+    # Run AI analysis
+    scan = scan_listing_for_fake(
+        title,
+        description,
+        data.get('category', 'amv'),
+        data.get('video_url'),
+        data.get('thumbnail'),
+    )
+    
+    # Add quality score and suggestions
+    quality_score = scan.get('score', 5.0)
+    
+    # Generate AI suggestions
+    suggestions = []
+    if quality_score < 8:
+        if len(title) < 20:
+            suggestions.append("Make your title more descriptive (at least 20 characters)")
+        if len(description) < 100:
+            suggestions.append("Add more details to your description (at least 100 characters)")
+        if not data.get('video_url'):
+            suggestions.append("Add a portfolio video to showcase your work")
+        if data.get('price', 0) < 100:
+            suggestions.append("Consider pricing your service at least ₹100 for quality work")
+    
+    if scan.get('is_fake'):
+        suggestions.extend(scan.get('reasons', []))
+    
     return jsonify({
-        'id': user.id,
-        'email': user.email,
-        'username': user.username,
-        'full_name': user.full_name,
-        'is_seller': user.is_seller,
-        'balance': user.balance,
-        'trust_score': user.trust_score,
-        'profile_image': user.profile_image,
-        'upi_id': user.upi_id
+        'passed': scan.get('passed', True),
+        'is_fake': scan.get('is_fake', False),
+        'quality_score': quality_score,
+        'confidence': scan.get('confidence', 0.8),
+        'suggestions': suggestions,
+        'reasons': scan.get('reasons', []),
+        'analysis': scan.get('analysis', 'AI analysis complete'),
     })
 
 # ==================== GIG ROUTES ====================
@@ -818,6 +1055,8 @@ def create_razorpay_payment():
     order = Order.query.get_or_404(data['order_id'])
     
     try:
+        if not RAZORPAY_KEY_ID or not RAZORPAY_KEY_SECRET:
+            return jsonify({'error': 'Razorpay is not configured on the server'}), 400
         razorpay_order = razorpay_client.order.create({
             'amount': int(order.amount * 100),  # Convert to paise
             'currency': 'INR',
@@ -840,6 +1079,8 @@ def verify_razorpay_payment():
     order = Order.query.get_or_404(data['order_id'])
     
     try:
+        if not RAZORPAY_KEY_ID or not RAZORPAY_KEY_SECRET:
+            return jsonify({'error': 'Razorpay is not configured on the server'}), 400
         razorpay_client.utility.verify_payment_signature({
             'razorpay_order_id': data['razorpay_order_id'],
             'razorpay_payment_id': data['razorpay_payment_id'],
@@ -858,7 +1099,7 @@ def verify_razorpay_payment():
         
         return jsonify({'message': 'Payment successful', 'order_id': order.id})
     except Exception as e:
-        return jsonify({'error': 'Payment verification failed'}), 400
+        return jsonify({'error': 'Payment verification failed', 'details': str(e)}), 400
 
 @app.route('/api/payment/upi/create', methods=['POST'])
 @jwt_required()
@@ -1399,7 +1640,31 @@ def _boot_workers_once():
 init_vortex()
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    try:
+        # Initialize chat system with SocketIO
+        from chat_system import init_chat_system
+        socketio = init_chat_system(app, db)
+        print("✓ Chat system initialized")
+        
+        # Initialize email service
+        from email_service import init_email_service
+        init_email_service(app)
+        print("✓ Email service initialized")
+        
+        print("\n🚀 Server starting on http://localhost:5000")
+        print("📊 AI-powered marketplace ready!")
+        print("💬 Real-time chat enabled")
+        print("🤖 AI verification active")
+        
+        # Run with SocketIO support for real-time chat
+        socketio.run(app, debug=True, host='0.0.0.0', port=5000, allow_unsafe_werkzeug=True)
+    except Exception as e:
+        print(f"❌ Server startup error: {e}")
+        import traceback
+        traceback.print_exc()
+        # Fallback to regular Flask if SocketIO fails
+        app.run(debug=True, host='0.0.0.0', port=5000)
+
 
 
 # ==================== AI-POWERED ENDPOINTS ====================
@@ -1538,22 +1803,18 @@ def set_user_role():
     
     if role == 'seller':
         user.is_seller = True
-    
-    # Store account type preference
-    if not hasattr(user, 'account_type'):
-        # Add account_type column if it doesn't exist
-        pass
+    elif role == 'buyer':
+        user.is_seller = user.is_seller
+    else:
+        return jsonify({'error': 'Invalid role'}), 400
+
+    user.account_type = role
     
     db.session.commit()
     
     return jsonify({
         'message': f'Role set to {role}',
-        'user': {
-            'id': user.id,
-            'username': user.username,
-            'is_seller': user.is_seller,
-            'account_type': role
-        }
+        'user': serialize_user(user)
     })
 
 @app.route('/api/user/switch-role', methods=['POST'])
@@ -1568,17 +1829,15 @@ def switch_user_role():
     
     if new_role == 'seller':
         user.is_seller = True
+    elif new_role != 'buyer':
+        return jsonify({'error': 'Invalid role'}), 400
+    user.account_type = new_role
     
     db.session.commit()
     
     return jsonify({
         'message': f'Switched to {new_role} mode',
-        'user': {
-            'id': user.id,
-            'username': user.username,
-            'is_seller': user.is_seller,
-            'current_role': new_role
-        }
+        'user': serialize_user(user)
     })
 
 @app.route('/api/user/profile', methods=['PUT'])
@@ -1611,3 +1870,473 @@ def update_user_profile():
             'profile_image': user.profile_image
         }
     })
+
+
+# ==================== CHAT SYSTEM ENDPOINTS ====================
+
+@app.route('/api/chat/messages/<int:order_id>', methods=['GET'])
+@jwt_required()
+def get_chat_messages(order_id):
+    """Get all messages for an order"""
+    user_id = get_jwt_identity()
+    order = Order.query.get_or_404(order_id)
+    
+    # Check if user is part of this order
+    if order.buyer_id != user_id and order.seller_id != user_id:
+        return jsonify({'error': 'Unauthorized'}), 403
+    
+    messages = Message.query.filter_by(order_id=order_id).order_by(Message.timestamp.asc()).all()
+    
+    return jsonify({
+        'messages': [{
+            'id': m.id,
+            'sender': {
+                'id': m.sender_id,
+                'username': User.query.get(m.sender_id).username,
+                'profile_image': User.query.get(m.sender_id).profile_image
+            },
+            'content': m.content,
+            'timestamp': m.timestamp.isoformat(),
+            'is_read': m.is_read,
+            'message_type': m.message_type
+        } for m in messages]
+    })
+
+@app.route('/api/chat/unread-count', methods=['GET'])
+@jwt_required()
+def get_unread_count():
+    """Get count of unread messages"""
+    user_id = get_jwt_identity()
+    
+    # Get all orders where user is involved
+    orders = Order.query.filter(
+        (Order.buyer_id == user_id) | (Order.seller_id == user_id)
+    ).all()
+    
+    order_ids = [o.id for o in orders]
+    
+    # Count unread messages
+    unread_count = Message.query.filter(
+        Message.order_id.in_(order_ids),
+        Message.sender_id != user_id,
+        Message.is_read == False
+    ).count()
+    
+    return jsonify({'unread_count': unread_count})
+
+# ==================== AI-POWERED DELIVERY VERIFICATION ====================
+
+@app.route('/api/orders/<int:order_id>/deliver-with-verification', methods=['POST'])
+@jwt_required()
+def deliver_order_with_ai_verification(order_id):
+    """Deliver order with automatic AI verification"""
+    user_id = get_jwt_identity()
+    order = Order.query.get_or_404(order_id)
+    
+    if order.seller_id != user_id:
+        return jsonify({'error': 'Unauthorized'}), 403
+    
+    data = request.json
+    
+    # Update order with delivery
+    order.delivery_file = data.get('file_url')
+    order.seller_message = data.get('message', '')
+    
+    # Get gig details for verification
+    gig = Gig.query.get(order.gig_id)
+    
+    # Prepare data for AI verification
+    from ai_verification import ai_verification
+    
+    delivery_data = {
+        'file_url': data.get('file_url'),
+        'file_type': data.get('file_type', 'video'),
+        'delivery_notes': data.get('message', ''),
+        'gig_requirements': gig.description,
+        'expected_quality': 'professional',
+        'delivery_time': (datetime.utcnow() - order.created_at).days,
+        'promised_time': gig.delivery_days
+    }
+    
+    # AI verification
+    verification_result = ai_verification.verify_delivery(delivery_data)
+    
+    # Save verification result
+    verification = DeliveryVerification(
+        order_id=order.id,
+        verification_status='approved' if verification_result['approved'] else 'pending',
+        quality_score=verification_result['quality_score'],
+        ai_confidence=verification_result['confidence'],
+        ai_analysis=verification_result['analysis'],
+        issues_found=json.dumps(verification_result['issues']),
+        auto_approved=verification_result['auto_release_payment'],
+        verified_at=datetime.utcnow()
+    )
+    
+    db.session.add(verification)
+    
+    # Auto-release payment if AI approves
+    if verification_result['auto_release_payment']:
+        order.status = 'completed'
+        order.escrow_status = 'released'
+        order.completed_at = datetime.utcnow()
+        
+        # Release payment to seller (85% after platform fee)
+        seller = User.query.get(order.seller_id)
+        seller.balance += order.amount * 0.85
+        
+        # Send system message
+        system_msg = Message(
+            order_id=order.id,
+            sender_id=user_id,
+            content=f"✅ Delivery automatically verified by AI! Quality Score: {verification_result['quality_score']}/10. Payment released to seller.",
+            message_type='system'
+        )
+        db.session.add(system_msg)
+    else:
+        # Requires manual buyer confirmation
+        system_msg = Message(
+            order_id=order.id,
+            sender_id=user_id,
+            content=f"📋 Delivery submitted for buyer review. Quality Score: {verification_result['quality_score']}/10. Awaiting buyer confirmation.",
+            message_type='system'
+        )
+        db.session.add(system_msg)
+    
+    db.session.commit()
+    
+    return jsonify({
+        'message': 'Delivery submitted successfully',
+        'verification': {
+            'approved': verification_result['approved'],
+            'quality_score': verification_result['quality_score'],
+            'confidence': verification_result['confidence'],
+            'analysis': verification_result['analysis'],
+            'auto_released': verification_result['auto_release_payment']
+        },
+        'order_status': order.status
+    })
+
+@app.route('/api/orders/<int:order_id>/verification', methods=['GET'])
+@jwt_required()
+def get_delivery_verification(order_id):
+    """Get AI verification details for an order"""
+    user_id = get_jwt_identity()
+    order = Order.query.get_or_404(order_id)
+    
+    if order.buyer_id != user_id and order.seller_id != user_id:
+        return jsonify({'error': 'Unauthorized'}), 403
+    
+    verification = DeliveryVerification.query.filter_by(order_id=order_id).first()
+    
+    if not verification:
+        return jsonify({'error': 'No verification found'}), 404
+    
+    return jsonify({
+        'verification_status': verification.verification_status,
+        'quality_score': verification.quality_score,
+        'ai_confidence': verification.ai_confidence,
+        'ai_analysis': verification.ai_analysis,
+        'issues_found': json.loads(verification.issues_found) if verification.issues_found else [],
+        'auto_approved': verification.auto_approved,
+        'verified_at': verification.verified_at.isoformat() if verification.verified_at else None
+    })
+
+@app.route('/api/orders/<int:order_id>/request-revision', methods=['POST'])
+@jwt_required()
+def request_revision(order_id):
+    """Buyer requests revision after AI verification"""
+    user_id = get_jwt_identity()
+    order = Order.query.get_or_404(order_id)
+    
+    if order.buyer_id != user_id:
+        return jsonify({'error': 'Unauthorized'}), 403
+    
+    data = request.json
+    
+    # Add revision request message
+    msg = Message(
+        order_id=order.id,
+        sender_id=user_id,
+        content=f"🔄 Revision requested: {data.get('reason', 'No reason provided')}",
+        message_type='system'
+    )
+    
+    db.session.add(msg)
+    order.status = 'in_progress'
+    
+    db.session.commit()
+    
+    return jsonify({'message': 'Revision requested successfully'})
+
+
+# ==================== SELLER WALLET SYSTEM ====================
+
+@app.route('/api/wallet/balance', methods=['GET'])
+@jwt_required()
+def get_wallet_balance():
+    """Get seller's wallet balance and earnings breakdown"""
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id)
+    
+    if not user.is_seller:
+        return jsonify({'error': 'Only sellers have wallets'}), 403
+    
+    # Calculate earnings breakdown
+    completed_orders = Order.query.filter_by(
+        seller_id=user_id,
+        status='completed',
+        escrow_status='released'
+    ).all()
+    
+    total_earned = sum(o.amount * 0.85 for o in completed_orders)  # After 15% fee
+    
+    # Pending earnings (orders in progress)
+    pending_orders = Order.query.filter_by(
+        seller_id=user_id,
+        status='in_progress',
+        escrow_status='held'
+    ).all()
+    
+    pending_earnings = sum(o.amount * 0.85 for o in pending_orders)
+    
+    # Withdrawn amount
+    completed_withdrawals = Withdrawal.query.filter_by(
+        user_id=user_id,
+        status='completed'
+    ).all()
+    
+    total_withdrawn = sum(w.amount for w in completed_withdrawals)
+    
+    # Pending withdrawals
+    pending_withdrawals = Withdrawal.query.filter_by(
+        user_id=user_id,
+        status='pending'
+    ).all()
+    
+    pending_withdrawal_amount = sum(w.amount for w in pending_withdrawals)
+    
+    return jsonify({
+        'available_balance': user.balance,
+        'total_earned': total_earned,
+        'pending_earnings': pending_earnings,
+        'total_withdrawn': total_withdrawn,
+        'pending_withdrawals': pending_withdrawal_amount,
+        'total_orders': len(completed_orders),
+        'currency': 'INR'
+    })
+
+@app.route('/api/wallet/transactions', methods=['GET'])
+@jwt_required()
+def get_wallet_transactions():
+    """Get all wallet transactions for seller"""
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id)
+    
+    if not user.is_seller:
+        return jsonify({'error': 'Only sellers have wallets'}), 403
+    
+    # Get all completed orders (earnings)
+    orders = Order.query.filter_by(
+        seller_id=user_id,
+        status='completed',
+        escrow_status='released'
+    ).order_by(Order.completed_at.desc()).all()
+    
+    earnings = [{
+        'id': o.id,
+        'type': 'earning',
+        'amount': o.amount * 0.85,
+        'gross_amount': o.amount,
+        'platform_fee': o.amount * 0.15,
+        'description': f"Payment for: {Gig.query.get(o.gig_id).title}",
+        'buyer': User.query.get(o.buyer_id).username,
+        'date': o.completed_at.isoformat() if o.completed_at else None,
+        'status': 'completed'
+    } for o in orders]
+    
+    # Get all withdrawals
+    withdrawals = Withdrawal.query.filter_by(
+        user_id=user_id
+    ).order_by(Withdrawal.created_at.desc()).all()
+    
+    withdrawal_transactions = [{
+        'id': w.id,
+        'type': 'withdrawal',
+        'amount': -w.amount,  # Negative for withdrawals
+        'description': f"Withdrawal to {w.method.upper()}",
+        'method': w.method,
+        'date': w.created_at.isoformat(),
+        'status': w.status,
+        'processed_at': w.processed_at.isoformat() if w.processed_at else None
+    } for w in withdrawals]
+    
+    # Combine and sort by date
+    all_transactions = earnings + withdrawal_transactions
+    all_transactions.sort(key=lambda x: x['date'], reverse=True)
+    
+    return jsonify({
+        'transactions': all_transactions,
+        'total_count': len(all_transactions)
+    })
+
+@app.route('/api/wallet/earnings-stats', methods=['GET'])
+@jwt_required()
+def get_earnings_stats():
+    """Get earnings statistics for seller"""
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id)
+    
+    if not user.is_seller:
+        return jsonify({'error': 'Only sellers have wallets'}), 403
+    
+    from datetime import timedelta
+    
+    # This month's earnings
+    month_start = datetime.utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    month_orders = Order.query.filter(
+        Order.seller_id == user_id,
+        Order.status == 'completed',
+        Order.completed_at >= month_start
+    ).all()
+    
+    month_earnings = sum(o.amount * 0.85 for o in month_orders)
+    
+    # Last 7 days
+    week_start = datetime.utcnow() - timedelta(days=7)
+    week_orders = Order.query.filter(
+        Order.seller_id == user_id,
+        Order.status == 'completed',
+        Order.completed_at >= week_start
+    ).all()
+    
+    week_earnings = sum(o.amount * 0.85 for o in week_orders)
+    
+    # Average order value
+    all_orders = Order.query.filter_by(
+        seller_id=user_id,
+        status='completed'
+    ).all()
+    
+    avg_order_value = (sum(o.amount for o in all_orders) / len(all_orders)) if all_orders else 0
+    
+    return jsonify({
+        'this_month': month_earnings,
+        'last_7_days': week_earnings,
+        'average_order_value': avg_order_value,
+        'total_orders': len(all_orders),
+        'currency': 'INR'
+    })
+
+@app.route('/api/wallet/withdraw-methods', methods=['GET'])
+@jwt_required()
+def get_withdrawal_methods():
+    """Get available withdrawal methods"""
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id)
+    
+    return jsonify({
+        'methods': [
+            {
+                'id': 'upi',
+                'name': 'UPI',
+                'description': 'Instant transfer to your UPI ID',
+                'processing_time': 'Instant',
+                'min_amount': 100,
+                'max_amount': 100000,
+                'fee': 0,
+                'available': True,
+                'saved_details': {
+                    'upi_id': user.upi_id if user.upi_id else None
+                }
+            },
+            {
+                'id': 'bank_transfer',
+                'name': 'Bank Transfer',
+                'description': 'Direct transfer to your bank account',
+                'processing_time': '1-3 business days',
+                'min_amount': 500,
+                'max_amount': 500000,
+                'fee': 0,
+                'available': True,
+                'saved_details': {
+                    'account_number': user.bank_account if user.bank_account else None
+                }
+            }
+        ]
+    })
+
+@app.route('/api/wallet/save-payment-method', methods=['POST'])
+@jwt_required()
+def save_payment_method():
+    """Save UPI ID or bank details for withdrawals"""
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id)
+    data = request.json
+    
+    if data.get('method') == 'upi':
+        user.upi_id = data.get('upi_id')
+    elif data.get('method') == 'bank_transfer':
+        user.bank_account = json.dumps({
+            'account_number': data.get('account_number'),
+            'ifsc_code': data.get('ifsc_code'),
+            'account_holder': data.get('account_holder'),
+            'bank_name': data.get('bank_name')
+        })
+    
+    db.session.commit()
+    
+    return jsonify({'message': 'Payment method saved successfully'})
+
+# ==================== EMAIL NOTIFICATIONS ====================
+
+from email_service import init_email_service
+
+# Initialize email service
+email_service = init_email_service(app)
+
+# Update order creation to send email
+@app.route('/api/orders/create-with-notification', methods=['POST'])
+@jwt_required()
+def create_order_with_notification():
+    buyer_id = get_jwt_identity()
+    data = request.json
+    
+    gig = Gig.query.get_or_404(data['gig_id'])
+    
+    if gig.seller_id == buyer_id:
+        return jsonify({'error': 'Cannot order your own gig'}), 400
+    
+    order = Order(
+        buyer_id=buyer_id,
+        seller_id=gig.seller_id,
+        gig_id=gig.id,
+        amount=gig.price,
+        buyer_message=data.get('message', '')
+    )
+    
+    db.session.add(order)
+    db.session.commit()
+    
+    # Send email notification to seller
+    seller = User.query.get(gig.seller_id)
+    buyer = User.query.get(buyer_id)
+    
+    email_service.send_order_notification_to_seller(
+        seller_email=seller.email,
+        seller_name=seller.full_name or seller.username,
+        order_data={
+            'order_id': order.id,
+            'gig_title': gig.title,
+            'buyer_name': buyer.username,
+            'amount': order.amount,
+            'delivery_days': gig.delivery_days,
+            'buyer_message': data.get('message', '')
+        }
+    )
+    
+    return jsonify({
+        'order_id': order.id,
+        'amount': order.amount,
+        'message': 'Order created, seller notified via email'
+    }), 201

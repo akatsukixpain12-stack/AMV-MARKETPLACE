@@ -149,6 +149,8 @@ Navigate to `http://localhost:3000`
 - `POST /api/auth/register` - Register new user
 - `POST /api/auth/login` - Login
 - `POST /api/auth/google` - Google OAuth
+- `POST /api/auth/otp/request` - Generate phone OTP for signup
+- `POST /api/auth/otp/verify` - Verify phone OTP
 - `GET /api/auth/me` - Get current user
 
 ### Gigs
@@ -187,6 +189,80 @@ Support the project: [Donate via UPI](https://urpy.link/gkLVl4)
 ## 📧 Contact
 
 For support or inquiries, open an issue on GitHub.
+
+## Render Deployment
+
+This repo now includes [`render.yaml`](./render.yaml) for a two-service Render setup:
+
+- `vortex-backend`: Flask API via `gunicorn app:app`
+- `vortex-frontend`: Next.js app via `npm run build` and `npm run start`
+
+### GitHub to Render
+
+1. Push this repo to GitHub.
+2. In Render, choose `New +` → `Blueprint` and select the repository.
+3. Render will read `render.yaml` and create both services.
+4. Set all required environment variables in Render before the first deploy.
+5. Turn on auto deploy from the repo branch you want to use.
+
+### Required Render Environment Variables
+
+Backend:
+- `SECRET_KEY`
+- `JWT_SECRET_KEY`
+- `DATABASE_URL`
+- `GOOGLE_CLIENT_ID`
+- `GOOGLE_CLIENT_SECRET`
+- `RAZORPAY_KEY_ID`
+- `RAZORPAY_KEY_SECRET`
+- `STRIPE_SECRET_KEY`
+- `PLATFORM_UPI_ID`
+
+Frontend:
+- `NEXT_PUBLIC_API_URL`
+- `NEXT_PUBLIC_GOOGLE_CLIENT_ID`
+- `NEXT_PUBLIC_RAZORPAY_KEY`
+- `NEXT_PUBLIC_DONATE_UPI`
+
+### Google OAuth Setup
+
+Use the same client id for:
+- backend `GOOGLE_CLIENT_ID`
+- frontend `NEXT_PUBLIC_GOOGLE_CLIENT_ID`
+
+In Google Cloud Console, add the exact frontend URL Render gives you as an authorized JavaScript origin. If you later use a custom domain, add that too.
+
+### Razorpay Setup
+
+Use:
+- backend `RAZORPAY_KEY_ID`
+- backend `RAZORPAY_KEY_SECRET`
+- frontend `NEXT_PUBLIC_RAZORPAY_KEY`
+
+Frontend key must match the backend account, or payment creation and verification will fail.
+
+## GitHub Terminal Workflow
+
+Use these commands from the project root:
+
+```bash
+git init
+git add .
+git commit -m "Initial deploy-ready setup"
+git branch -M main
+git remote add origin https://github.com/<your-user>/<your-repo>.git
+git push -u origin main
+```
+
+For later deploys:
+
+```bash
+git add .
+git commit -m "Update auth and deployment"
+git push
+```
+
+With Render auto-deploy enabled, each push to GitHub triggers a new deployment automatically.
 
 ---
 

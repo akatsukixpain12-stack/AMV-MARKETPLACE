@@ -6,10 +6,9 @@ import { useAuthStore } from '../lib/store';
 import { getCurrentUser } from '../lib/api';
 import Navbar from '../components/Navbar';
 
-const googleClientId = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID || '000000000000-00000000000000000000000.apps.googleusercontent.com';
-
 function MyApp({ Component, pageProps }) {
   const { setAuth } = useAuthStore();
+  const googleClientId = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID;
 
   useEffect(() => {
     const token = localStorage.getItem('token');
@@ -20,8 +19,8 @@ function MyApp({ Component, pageProps }) {
     }
   }, []);
 
-  return (
-    <GoogleOAuthProvider clientId={googleClientId}>
+  const appShell = (
+    <>
       <Navbar />
       <Component {...pageProps} />
       <Toaster 
@@ -34,6 +33,16 @@ function MyApp({ Component, pageProps }) {
           },
         }}
       />
+    </>
+  );
+
+  if (!googleClientId) {
+    return appShell;
+  }
+
+  return (
+    <GoogleOAuthProvider clientId={googleClientId}>
+      {appShell}
     </GoogleOAuthProvider>
   );
 }
