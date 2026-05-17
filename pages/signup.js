@@ -1,15 +1,12 @@
 import { useState } from 'react';
-import Head from 'next/head';
-import Link from 'next/link';
 import { useRouter } from 'next/router';
+import Link from 'next/link';
+import { GoogleLogin } from '@react-oauth/google';
 import { register, googleAuth } from '../lib/api';
 import { useAuthStore } from '../lib/store';
 import toast from 'react-hot-toast';
-import GoogleAuthButton from '../components/GoogleAuthButton';
 
 export default function Signup() {
-  const router = useRouter();
-  const { setAuth } = useAuthStore();
   const [formData, setFormData] = useState({
     email: '',
     username: '',
@@ -18,8 +15,14 @@ export default function Signup() {
     confirmPassword: '',
   });
   const [loading, setLoading] = useState(false);
+  const router = useRouter();
+  const { setAuth } = useAuthStore();
 
-  const handleSubmit = async (e) => {
+  const handleChange = (e) => {
+    setFormData({ ...formData, [e.target.name]: e.target.value });
+  };
+
+  const handleSignup = async (e) => {
     e.preventDefault();
 
     if (formData.password !== formData.confirmPassword) {
@@ -35,9 +38,13 @@ export default function Signup() {
     setLoading(true);
 
     try {
-      const res = await register(formData);
+      const res = await register({
+        email: formData.email,
+        username: formData.username,
+        full_name: formData.full_name,
+        password: formData.password,
+      });
       setAuth(res.data.user, res.data.token);
-      localStorage.setItem('token', res.data.token);
       toast.success('Account created successfully!');
       router.push('/dashboard');
     } catch (error) {
@@ -51,8 +58,7 @@ export default function Signup() {
     try {
       const res = await googleAuth(credentialResponse.credential);
       setAuth(res.data.user, res.data.token);
-      localStorage.setItem('token', res.data.token);
-      toast.success('Welcome!');
+      toast.success('Welcome to Vortex!');
       router.push('/dashboard');
     } catch (error) {
       toast.error('Google signup failed');
@@ -60,108 +66,109 @@ export default function Signup() {
   };
 
   return (
-    <>
-      <Head>
-        <title>Sign Up - VORTEX</title>
-      </Head>
+    <div className="min-h-screen bg-bg flex items-center justify-center px-6 pt-20 pb-10">
+      <div className="w-full max-w-md">
+        <div className="text-center mb-8">
+          <h1 className="text-display text-5xl mb-3">SIGN UP</h1>
+          <p className="text-white/60">Join the creator revolution</p>
+        </div>
 
-      <div className="min-h-screen flex items-center justify-center px-6 py-12 bg-gradient-to-br from-purple-900/20 via-black to-black">
-        <div className="w-full max-w-md">
-          <Link href="/" className="text-display text-4xl block text-center mb-8">
-            VORTEX
-          </Link>
-
-          <div className="bg-[#131313] border border-white/10 rounded-2xl p-8">
-            <h1 className="text-2xl font-bold mb-2">Create Account</h1>
-            <p className="text-white/60 text-sm mb-8">Join the marketplace</p>
-
-            <form onSubmit={handleSubmit} className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium mb-2">Full Name</label>
-                <input
-                  type="text"
-                  required
-                  value={formData.full_name}
-                  onChange={(e) => setFormData({ ...formData, full_name: e.target.value })}
-                  className="w-full px-4 py-3 rounded-lg bg-black border border-white/10 focus:border-white/30 outline-none transition"
-                  placeholder="John Doe"
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium mb-2">Username</label>
-                <input
-                  type="text"
-                  required
-                  value={formData.username}
-                  onChange={(e) => setFormData({ ...formData, username: e.target.value })}
-                  className="w-full px-4 py-3 rounded-lg bg-black border border-white/10 focus:border-white/30 outline-none transition"
-                  placeholder="johndoe"
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium mb-2">Email</label>
-                <input
-                  type="email"
-                  required
-                  value={formData.email}
-                  onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-                  className="w-full px-4 py-3 rounded-lg bg-black border border-white/10 focus:border-white/30 outline-none transition"
-                  placeholder="your@email.com"
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium mb-2">Password</label>
-                <input
-                  type="password"
-                  required
-                  value={formData.password}
-                  onChange={(e) => setFormData({ ...formData, password: e.target.value })}
-                  className="w-full px-4 py-3 rounded-lg bg-black border border-white/10 focus:border-white/30 outline-none transition"
-                  placeholder="••••••••"
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium mb-2">Confirm Password</label>
-                <input
-                  type="password"
-                  required
-                  value={formData.confirmPassword}
-                  onChange={(e) => setFormData({ ...formData, confirmPassword: e.target.value })}
-                  className="w-full px-4 py-3 rounded-lg bg-black border border-white/10 focus:border-white/30 outline-none transition"
-                  placeholder="••••••••"
-                />
-              </div>
-
-              <button
-                type="submit"
-                disabled={loading}
-                className="w-full px-6 py-3 rounded-lg bg-white text-black font-semibold hover:bg-gray-200 transition disabled:opacity-50"
-              >
-                {loading ? 'Creating account...' : 'Sign Up'}
-              </button>
-            </form>
-
-            <div className="my-6 flex items-center gap-4">
-              <div className="flex-1 h-px bg-white/10" />
-              <span className="text-sm text-white/50">OR</span>
-              <div className="flex-1 h-px bg-white/10" />
+        <div className="bg-card border border-white/10 rounded-2xl p-8">
+          <form onSubmit={handleSignup} className="space-y-4">
+            <div>
+              <label className="block text-sm text-white/60 mb-2">Full Name</label>
+              <input
+                type="text"
+                name="full_name"
+                value={formData.full_name}
+                onChange={handleChange}
+                className="w-full px-4 py-3 rounded-lg bg-surface border border-white/10 focus:border-white/30 outline-none transition"
+                required
+              />
             </div>
 
-            <GoogleAuthButton mode="signup" onSuccess={handleGoogleSuccess} />
+            <div>
+              <label className="block text-sm text-white/60 mb-2">Username</label>
+              <input
+                type="text"
+                name="username"
+                value={formData.username}
+                onChange={handleChange}
+                className="w-full px-4 py-3 rounded-lg bg-surface border border-white/10 focus:border-white/30 outline-none transition"
+                required
+              />
+            </div>
 
-            <p className="text-center text-sm text-white/60 mt-6">
-              Already have an account?{' '}
-              <Link href="/login" className="text-white hover:text-white/80 font-semibold">
-                Login
-              </Link>
-            </p>
+            <div>
+              <label className="block text-sm text-white/60 mb-2">Email</label>
+              <input
+                type="email"
+                name="email"
+                value={formData.email}
+                onChange={handleChange}
+                className="w-full px-4 py-3 rounded-lg bg-surface border border-white/10 focus:border-white/30 outline-none transition"
+                required
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm text-white/60 mb-2">Password</label>
+              <input
+                type="password"
+                name="password"
+                value={formData.password}
+                onChange={handleChange}
+                className="w-full px-4 py-3 rounded-lg bg-surface border border-white/10 focus:border-white/30 outline-none transition"
+                required
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm text-white/60 mb-2">Confirm Password</label>
+              <input
+                type="password"
+                name="confirmPassword"
+                value={formData.confirmPassword}
+                onChange={handleChange}
+                className="w-full px-4 py-3 rounded-lg bg-surface border border-white/10 focus:border-white/30 outline-none transition"
+                required
+              />
+            </div>
+
+            <button
+              type="submit"
+              disabled={loading}
+              className="w-full py-3 rounded-lg bg-white text-black font-semibold hover:bg-gray-200 transition disabled:opacity-50"
+            >
+              {loading ? 'Creating account...' : 'Create Account'}
+            </button>
+          </form>
+
+          <div className="my-6 flex items-center gap-4">
+            <div className="flex-1 h-px bg-white/10" />
+            <span className="text-sm text-white/40">OR</span>
+            <div className="flex-1 h-px bg-white/10" />
           </div>
+
+          <div className="flex justify-center">
+            <GoogleLogin
+              onSuccess={handleGoogleSuccess}
+              onError={() => toast.error('Google signup failed')}
+              theme="filled_black"
+              size="large"
+              text="signup_with"
+              shape="rectangular"
+            />
+          </div>
+
+          <p className="text-center text-sm text-white/60 mt-6">
+            Already have an account?{' '}
+            <Link href="/login" className="text-white hover:underline">
+              Login
+            </Link>
+          </p>
         </div>
       </div>
-    </>
+    </div>
   );
 }

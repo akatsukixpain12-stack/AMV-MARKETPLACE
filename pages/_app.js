@@ -1,27 +1,27 @@
 import '../styles/globals.css';
 import { useEffect } from 'react';
 import { Toaster } from 'react-hot-toast';
-import { GoogleOAuthProvider } from '@react-oauth/google';
 import { useAuthStore } from '../lib/store';
 import { getCurrentUser } from '../lib/api';
-
-const googleClientId = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID || '000000000000-00000000000000000000000.apps.googleusercontent.com';
+import Navbar from '../components/Navbar';
 
 function MyApp({ Component, pageProps }) {
-  const { token, setAuth, logout } = useAuthStore();
+  const { setAuth } = useAuthStore();
 
   useEffect(() => {
+    const token = localStorage.getItem('token');
     if (token) {
       getCurrentUser()
-        .then((res) => setAuth(res.data, token))
-        .catch(() => logout());
+        .then(res => setAuth(res.data, token))
+        .catch(() => localStorage.removeItem('token'));
     }
   }, []);
 
   return (
-    <GoogleOAuthProvider clientId={googleClientId}>
+    <>
+      <Navbar />
       <Component {...pageProps} />
-      <Toaster
+      <Toaster 
         position="top-right"
         toastOptions={{
           style: {
@@ -31,7 +31,7 @@ function MyApp({ Component, pageProps }) {
           },
         }}
       />
-    </GoogleOAuthProvider>
+    </>
   );
 }
 

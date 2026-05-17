@@ -79,7 +79,7 @@ export default function WalletPage() {
             <Wallet className="w-10 h-10 text-green-400 mb-4" />
             <p className="text-sm text-white/50">Available balance</p>
             <p className="text-display text-5xl mb-2">₹{user?.balance?.toFixed(2) || '0.00'}</p>
-            <p className="text-xs text-white/40">Earned after buyers release escrow (85% after platform fee)</p>
+            <p className="text-xs text-white/40">Earned after buyers release escrow (90% after 10% platform fee)</p>
           </div>
 
           <form onSubmit={handleWithdraw} className="bg-[#131313] border border-white/10 rounded-2xl p-8 space-y-4">

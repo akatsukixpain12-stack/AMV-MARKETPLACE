@@ -51,6 +51,10 @@ stripe.api_key = STRIPE_SECRET_KEY
 
 GOOGLE_CLIENT_ID = os.environ.get('GOOGLE_CLIENT_ID', '')
 
+# Platform fee — 10% goes to this UPI; seller gets 90% in wallet
+PLATFORM_UPI_ID = os.environ.get('PLATFORM_UPI_ID', '7407589434@fam')
+PLATFORM_FEE_RATE = float(os.environ.get('PLATFORM_FEE_RATE', '0.10'))
+
 # ==================== DATABASE MODELS ====================
 
 class User(db.Model):
@@ -134,7 +138,29 @@ class ContentFingerprint(db.Model):
     fingerprint = db.Column(db.Text, nullable=False)  # Perceptual hash
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
+class PlatformFee(db.Model):
+    """Platform fee (10%) credited to PLATFORM_UPI_ID on escrow release"""
+    id = db.Column(db.Integer, primary_key=True)
+    order_id = db.Column(db.Integer, db.ForeignKey('order.id'), nullable=False)
+    amount = db.Column(db.Float, nullable=False)
+    recipient_upi = db.Column(db.String(100), nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
 # ==================== HELPER FUNCTIONS ====================
+
+def split_escrow_payout(order):
+    """Release escrow: seller gets (100 - fee)%, platform fee logged to PLATFORM_UPI_ID"""
+    fee = round(order.amount * PLATFORM_FEE_RATE, 2)
+    seller_payout = round(order.amount - fee, 2)
+    seller = User.query.get(order.seller_id)
+    seller.balance += seller_payout
+    record = PlatformFee(
+        order_id=order.id,
+        amount=fee,
+        recipient_upi=PLATFORM_UPI_ID,
+    )
+    db.session.add(record)
+    return fee, seller_payout
 
 def calculate_perceptual_hash(image_data):
     """Calculate perceptual hash for plagiarism detection"""
@@ -648,17 +674,21 @@ def create_upi_payment():
     data = request.json
     order = Order.query.get_or_404(data['order_id'])
     
-    # Generate UPI payment link or QR code
-    upi_id = "merchant@upi"  # Replace with actual merchant UPI
     amount = order.amount
-    
-    upi_link = f"upi://pay?pa={upi_id}&pn=Vortex&am={amount}&cu=INR&tn=Order{order.id}"
+    platform_fee = round(amount * PLATFORM_FEE_RATE, 2)
+    upi_link = (
+        f"upi://pay?pa={PLATFORM_UPI_ID}&pn=Vortex&am={amount}&cu=INR"
+        f"&tn=Order{order.id}"
+    )
     
     return jsonify({
         'upi_link': upi_link,
         'order_id': order.id,
         'amount': amount,
-        'qr_data': upi_link
+        'platform_fee': platform_fee,
+        'platform_upi': PLATFORM_UPI_ID,
+        'seller_payout_on_release': round(amount - platform_fee, 2),
+        'qr_data': upi_link,
     })
 
 @app.route('/api/orders/<int:order_id>/complete', methods=['POST'])
@@ -670,20 +700,22 @@ def complete_order(order_id):
     if order.buyer_id != user_id:
         return jsonify({'error': 'Unauthorized'}), 403
     
-    # Release escrow to seller
     order.status = 'completed'
     order.escrow_status = 'released'
     order.completed_at = datetime.utcnow()
-    
-    seller = User.query.get(order.seller_id)
-    seller.balance += order.amount * 0.85  # 15% platform fee
-    
+
+    platform_fee, seller_payout = split_escrow_payout(order)
     db.session.commit()
     
     update_gig_rating(order.gig_id)
     update_seller_trust_score(order.seller_id)
     
-    return jsonify({'message': 'Order completed, payment released to seller'})
+    return jsonify({
+        'message': 'Order completed, payment released to seller',
+        'seller_payout': seller_payout,
+        'platform_fee': platform_fee,
+        'platform_upi': PLATFORM_UPI_ID,
+    })
 
 @app.route('/api/orders/<int:order_id>/deliver', methods=['POST'])
 @jwt_required()

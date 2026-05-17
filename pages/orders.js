@@ -28,8 +28,14 @@ export default function Orders() {
 
   const handleComplete = async (id) => {
     try {
-      await completeOrder(id);
-      toast.success('Escrow released to seller');
+      const res = await completeOrder(id);
+      const fee = res.data.platform_fee;
+      const upi = res.data.platform_upi;
+      toast.success(
+        fee != null
+          ? `Released to seller. Platform fee ₹${fee} → ${upi}`
+          : 'Escrow released to seller'
+      );
       load();
     } catch (e) {
       toast.error(e.response?.data?.error || 'Failed');
