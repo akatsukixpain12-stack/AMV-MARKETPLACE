@@ -3,9 +3,9 @@ import Head from 'next/head';
 import { useRouter } from 'next/router';
 import Navbar from '../components/Navbar';
 import { useAuthStore } from '../lib/store';
-import { getMyOrders, completeOrder, deliverOrder, disputeEscrow } from '../lib/api';
+import { getMyOrders, completeOrder, deliverOrder, disputeEscrow, requestAiVerify } from '../lib/api';
 import toast from 'react-hot-toast';
-import { Shield, CheckCircle, AlertTriangle } from 'lucide-react';
+import { Shield, CheckCircle, AlertTriangle, Bot, Download } from 'lucide-react';
 
 export default function Orders() {
   const router = useRouter();
@@ -13,6 +13,7 @@ export default function Orders() {
   const [tab, setTab] = useState('buyer');
   const [orders, setOrders] = useState([]);
   const [deliveryUrl, setDeliveryUrl] = useState({});
+  const [aiLoading, setAiLoading] = useState(null);
 
   const load = () => {
     getMyOrders(tab).then((res) => setOrders(res.data.orders)).catch(console.error);
@@ -26,31 +27,39 @@ export default function Orders() {
     load();
   }, [isAuthenticated, tab, router]);
 
-  const handleComplete = async (id) => {
+  const handleConfirmReceived = async (id) => {
+    if (!confirm('Confirm you received the AMV? Escrow will release to the seller.')) return;
     try {
       const res = await completeOrder(id);
-      const fee = res.data.platform_fee;
-      const upi = res.data.platform_upi;
-      toast.success(
-        fee != null
-          ? `Released to seller. Platform fee ₹${fee} → ${upi}`
-          : 'Escrow released to seller'
-      );
+      toast.success(res.data.message || 'Payment released');
       load();
     } catch (e) {
       toast.error(e.response?.data?.error || 'Failed');
     }
   };
 
+  const handleAiVerify = async (id) => {
+    setAiLoading(id);
+    try {
+      const res = await requestAiVerify(id);
+      toast.success(res.data.message);
+      load();
+    } catch (e) {
+      toast.error(e.response?.data?.error || 'AI verification failed');
+    } finally {
+      setAiLoading(null);
+    }
+  };
+
   const handleDeliver = async (id) => {
     const url = deliveryUrl[id];
     if (!url) {
-      toast.error('Enter delivery file URL');
+      toast.error('Enter delivery file URL (video link)');
       return;
     }
     try {
-      await deliverOrder(id, { file_url: url });
-      toast.success('Delivered to buyer');
+      const res = await deliverOrder(id, { file_url: url });
+      toast.success(res.data.message);
       load();
     } catch (e) {
       toast.error(e.response?.data?.error || 'Failed');
@@ -77,7 +86,11 @@ export default function Orders() {
       <Navbar />
       <main className="pt-24 pb-16 px-6">
         <div className="max-w-4xl mx-auto">
-          <h1 className="text-display text-5xl mb-8">ORDERS</h1>
+          <h1 className="text-display text-5xl mb-2">ORDERS</h1>
+          <p className="text-white/50 text-sm mb-8 flex items-center gap-2">
+            <Bot className="w-4 h-4 text-purple-400" />
+            Escrow: buyer confirms first · else AI (Claude + Codex + Cursor) verifies in background
+          </p>
 
           <div className="flex gap-2 mb-8">
             {['buyer', 'seller'].map((t) => (
@@ -101,34 +114,73 @@ export default function Orders() {
                     <p className="text-sm text-white/50">
                       {o.status} · <Shield className="w-3 h-3 inline text-green-400" /> escrow: {o.escrow_status}
                     </p>
+                    {o.delivered_at && (
+                      <p className="text-xs text-white/40 mt-1">Delivered {new Date(o.delivered_at).toLocaleString()}</p>
+                    )}
+                    {o.ai_verification_score != null && (
+                      <p className="text-xs text-purple-400 mt-1">AI score: {o.ai_verification_score} {o.ai_verified ? '✓' : ''}</p>
+                    )}
+                    {o.release_method && (
+                      <p className="text-xs text-green-400">Released via {o.release_method}</p>
+                    )}
                   </div>
                   <span className="text-display text-2xl">₹{o.amount}</span>
                 </div>
 
-                {tab === 'seller' && o.status === 'in_progress' && (
+                {o.delivery_file && (
+                  <a
+                    href={o.delivery_file}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-2 text-sm text-purple-400 mb-4 hover:underline"
+                  >
+                    <Download className="w-4 h-4" /> View delivered AMV
+                  </a>
+                )}
+
+                {tab === 'seller' && o.status === 'in_progress' && o.escrow_status === 'held' && !o.delivery_file && (
                   <div className="flex gap-2 mt-4">
                     <input
                       type="url"
-                      placeholder="Delivery file URL"
+                      placeholder="Delivery video URL (Google Drive, etc.)"
                       value={deliveryUrl[o.id] || ''}
                       onChange={(e) => setDeliveryUrl({ ...deliveryUrl, [o.id]: e.target.value })}
                       className="flex-1 px-3 py-2 rounded-lg bg-black border border-white/10 text-sm"
                     />
                     <button type="button" onClick={() => handleDeliver(o.id)} className="px-4 py-2 rounded-lg bg-purple-600 text-sm font-semibold">
-                      Deliver
+                      Deliver AMV
                     </button>
                   </div>
                 )}
 
-                {tab === 'buyer' && o.status === 'in_progress' && o.escrow_status === 'held' && (
+                {tab === 'buyer' && o.status === 'in_progress' && o.escrow_status === 'held' && o.delivery_file && !o.buyer_confirmed && (
                   <div className="flex flex-wrap gap-2 mt-4">
-                    <button type="button" onClick={() => handleComplete(o.id)} className="flex items-center gap-2 px-4 py-2 rounded-lg bg-green-600 text-sm font-semibold">
-                      <CheckCircle className="w-4 h-4" /> Approve & release escrow
+                    <button
+                      type="button"
+                      onClick={() => handleConfirmReceived(o.id)}
+                      className="flex items-center gap-2 px-4 py-2 rounded-lg bg-green-600 text-sm font-semibold"
+                    >
+                      <CheckCircle className="w-4 h-4" /> I received my AMV — release payment
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleAiVerify(o.id)}
+                      disabled={aiLoading === o.id}
+                      className="flex items-center gap-2 px-4 py-2 rounded-lg bg-purple-600/80 text-sm font-semibold disabled:opacity-50"
+                    >
+                      <Bot className="w-4 h-4" />
+                      {aiLoading === o.id ? 'AI checking...' : 'AI verify delivery'}
                     </button>
                     <button type="button" onClick={() => handleDispute(o.id)} className="flex items-center gap-2 px-4 py-2 rounded-lg border border-red-500/50 text-red-400 text-sm">
-                      <AlertTriangle className="w-4 h-4" /> Dispute
+                      <AlertTriangle className="w-4 h-4" /> Not received — dispute
                     </button>
                   </div>
+                )}
+
+                {tab === 'buyer' && o.delivery_file && !o.buyer_confirmed && o.escrow_status === 'held' && (
+                  <p className="text-xs text-white/40 mt-3">
+                    If you don&apos;t confirm, AI auto-verifies after 72h and releases only if delivery is valid.
+                  </p>
                 )}
               </div>
             ))}

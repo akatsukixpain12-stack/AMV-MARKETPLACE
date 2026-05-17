@@ -18,6 +18,18 @@ from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
 import razorpay
 import stripe
+import threading
+import time
+from ai_guard import (
+    sanitize_text,
+    check_rate_limit,
+    apply_security_headers,
+    scan_listing_for_fake,
+    verify_delivery_for_escrow,
+    security_audit_log,
+    AUTO_VERIFY_HOURS,
+    AI_ENGINES,
+)
 
 UPLOAD_FOLDER = os.path.join(os.path.dirname(__file__), 'uploads')
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
@@ -91,6 +103,10 @@ class Gig(db.Model):
     total_orders = db.Column(db.Integer, default=0)
     is_active = db.Column(db.Boolean, default=True)
     content_hash = db.Column(db.String(64))  # For plagiarism detection
+    ai_quality_score = db.Column(db.Float, default=0.0)
+    is_verified_listing = db.Column(db.Boolean, default=False)
+    flagged_fake = db.Column(db.Boolean, default=False)
+    ai_scan_notes = db.Column(db.Text)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     orders = db.relationship('Order', backref='gig', lazy=True)
     reviews = db.relationship('Review', backref='gig', lazy=True)
@@ -108,6 +124,12 @@ class Order(db.Model):
     delivery_file = db.Column(db.String(500))
     buyer_message = db.Column(db.Text)
     seller_message = db.Column(db.Text)
+    delivered_at = db.Column(db.DateTime)
+    buyer_confirmed = db.Column(db.Boolean, default=False)
+    ai_verified = db.Column(db.Boolean, default=False)
+    ai_verification_score = db.Column(db.Float)
+    ai_verification_notes = db.Column(db.Text)
+    release_method = db.Column(db.String(30))  # buyer_confirm, ai_auto
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     completed_at = db.Column(db.DateTime)
 
@@ -147,6 +169,131 @@ class PlatformFee(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 # ==================== HELPER FUNCTIONS ====================
+
+def _migrate_schema():
+    """Add new columns on existing SQLite DBs."""
+    from sqlalchemy import text, inspect
+    insp = inspect(db.engine)
+    cols_order = {c['name'] for c in insp.get_columns('order')} if insp.has_table('order') else set()
+    cols_gig = {c['name'] for c in insp.get_columns('gig')} if insp.has_table('gig') else set()
+    alters = []
+    order_new = {
+        'delivered_at': 'DATETIME', 'buyer_confirmed': 'BOOLEAN DEFAULT 0',
+        'ai_verified': 'BOOLEAN DEFAULT 0', 'ai_verification_score': 'FLOAT',
+        'ai_verification_notes': 'TEXT', 'release_method': 'VARCHAR(30)',
+    }
+    gig_new = {
+        'ai_quality_score': 'FLOAT DEFAULT 0', 'is_verified_listing': 'BOOLEAN DEFAULT 0',
+        'flagged_fake': 'BOOLEAN DEFAULT 0', 'ai_scan_notes': 'TEXT',
+    }
+    for name, typ in order_new.items():
+        if name not in cols_order:
+            alters.append(f'ALTER TABLE "order" ADD COLUMN {name} {typ}')
+    for name, typ in gig_new.items():
+        if name not in cols_gig:
+            alters.append(f'ALTER TABLE gig ADD COLUMN {name} {typ}')
+    with db.engine.connect() as conn:
+        for sql in alters:
+            try:
+                conn.execute(text(sql))
+                conn.commit()
+            except Exception:
+                pass
+
+
+def release_escrow_order(order, method):
+    """Complete order and pay seller + platform fee."""
+    if order.escrow_status != 'held':
+        return None
+    order.status = 'completed'
+    order.escrow_status = 'released'
+    order.completed_at = datetime.utcnow()
+    order.release_method = method
+    platform_fee, seller_payout = split_escrow_payout(order)
+    update_gig_rating(order.gig_id)
+    update_seller_trust_score(order.seller_id)
+    return platform_fee, seller_payout
+
+
+def run_ai_escrow_verify(order_id, app_instance):
+    """Background: AI verifies delivery and auto-releases if buyer did not confirm."""
+    with app_instance.app_context():
+        order = Order.query.get(order_id)
+        if not order or order.escrow_status != 'held' or order.buyer_confirmed:
+            return
+        if not order.delivered_at or not order.delivery_file:
+            return
+        if order.status == 'disputed':
+            return
+        gig = Gig.query.get(order.gig_id)
+        result = verify_delivery_for_escrow(order, gig)
+        order.ai_verification_score = result['score']
+        order.ai_verification_notes = json.dumps(result)
+        if result['passed']:
+            order.ai_verified = True
+            release_escrow_order(order, 'ai_auto')
+            security_audit_log('escrow_ai_release', f'order={order_id} score={result["score"]}')
+        else:
+            order.status = 'disputed'
+            security_audit_log('escrow_ai_dispute', f'order={order_id} {result["reasons"]}')
+        db.session.commit()
+
+
+def background_escrow_worker(app_instance):
+    """Scan orders past AUTO_VERIFY_HOURS — AI releases or disputes; remove fake gigs."""
+    with app_instance.app_context():
+        cutoff = datetime.utcnow() - timedelta(hours=AUTO_VERIFY_HOURS)
+        pending = Order.query.filter(
+            Order.escrow_status == 'held',
+            Order.buyer_confirmed == False,
+            Order.ai_verified == False,
+            Order.delivered_at != None,
+            Order.delivered_at <= cutoff,
+            Order.status != 'disputed',
+        ).all()
+        for order in pending:
+            run_ai_escrow_verify(order.id, app_instance)
+
+        for g in Gig.query.filter_by(is_active=True, flagged_fake=False).limit(50).all():
+            scan = scan_listing_for_fake(g.title, g.description or '', g.category, g.video_url, g.thumbnail)
+            if scan['is_fake']:
+                g.flagged_fake = True
+                g.is_active = False
+                g.ai_scan_notes = json.dumps(scan)
+        db.session.commit()
+
+
+def start_background_workers(flask_app):
+    def loop():
+        while True:
+            try:
+                background_escrow_worker(flask_app)
+            except Exception as e:
+                security_audit_log('worker_error', str(e))
+            time.sleep(120)
+
+    t = threading.Thread(target=loop, daemon=True)
+    t.start()
+
+
+@app.before_request
+def vortex_security_gate():
+    ip = request.remote_addr or 'unknown'
+    if not check_rate_limit(ip):
+        security_audit_log('rate_limit', ip)
+        return jsonify({'error': 'Too many requests — protected by VORTEX AI Guard'}), 429
+    if request.method in ('POST', 'PUT', 'PATCH') and request.is_json:
+        raw = request.get_data(as_text=True) or ''
+        for pat in (r'<script', r'javascript:', r'union\s+select', r'drop\s+table'):
+            if re.search(pat, raw, re.I):
+                security_audit_log('blocked_request', f'{ip} {request.path}')
+                return jsonify({'error': 'Request blocked by AI security'}), 400
+
+
+@app.after_request
+def vortex_security_headers(response):
+    return apply_security_headers(response)
+
 
 def split_escrow_payout(order):
     """Release escrow: seller gets (100 - fee)%, platform fee logged to PLATFORM_UPI_ID"""
@@ -454,7 +601,7 @@ def get_gigs():
     page = int(request.args.get('page', 1))
     per_page = int(request.args.get('per_page', 12))
     
-    query = Gig.query.filter_by(is_active=True)
+    query = Gig.query.filter_by(is_active=True, flagged_fake=False)
     
     if category != 'all':
         query = query.filter_by(category=category)
@@ -532,6 +679,23 @@ def create_gig():
         db.session.commit()
     
     data = request.json
+
+    try:
+        title = sanitize_text(data['title'], 200)
+        description = sanitize_text(data['description'], 8000)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+
+    ai_scan = scan_listing_for_fake(
+        title, description, data['category'],
+        data.get('video_url'), data.get('thumbnail'),
+    )
+    if ai_scan['is_fake']:
+        security_audit_log('blocked_fake_gig', f"user={user_id} {ai_scan['reasons']}")
+        return jsonify({
+            'error': 'Listing blocked — AI detected fake or low-quality AMV',
+            'ai_scan': ai_scan,
+        }), 400
     
     # Check for plagiarism if thumbnail provided
     if data.get('thumbnail_data'):
@@ -543,14 +707,18 @@ def create_gig():
     
     gig = Gig(
         seller_id=user_id,
-        title=data['title'],
-        description=data['description'],
+        title=title,
+        description=description,
         category=data['category'],
         price=float(data['price']),
         delivery_days=int(data.get('delivery_days', 3)),
         thumbnail=data.get('thumbnail'),
         video_url=data.get('video_url'),
-        tags=json.dumps(data.get('tags', []))
+        tags=json.dumps(data.get('tags', [])),
+        ai_quality_score=ai_scan['score'],
+        is_verified_listing=ai_scan['passed'],
+        flagged_fake=False,
+        ai_scan_notes=json.dumps(ai_scan),
     )
     
     db.session.add(gig)
@@ -699,22 +867,27 @@ def complete_order(order_id):
     
     if order.buyer_id != user_id:
         return jsonify({'error': 'Unauthorized'}), 403
-    
-    order.status = 'completed'
-    order.escrow_status = 'released'
-    order.completed_at = datetime.utcnow()
 
-    platform_fee, seller_payout = split_escrow_payout(order)
+    if not order.delivery_file:
+        return jsonify({'error': 'Seller has not delivered yet — escrow still held'}), 400
+
+    if order.status == 'disputed':
+        return jsonify({'error': 'Order is in dispute — contact support'}), 400
+
+    order.buyer_confirmed = True
+    payout = release_escrow_order(order, 'buyer_confirm')
+    if not payout:
+        return jsonify({'error': 'Escrow already settled'}), 400
+    platform_fee, seller_payout = payout
     db.session.commit()
-    
-    update_gig_rating(order.gig_id)
-    update_seller_trust_score(order.seller_id)
-    
+    security_audit_log('buyer_confirm', f'order={order_id}')
+
     return jsonify({
-        'message': 'Order completed, payment released to seller',
+        'message': 'You confirmed receipt — payment released to seller',
         'seller_payout': seller_payout,
         'platform_fee': platform_fee,
         'platform_upi': PLATFORM_UPI_ID,
+        'release_method': 'buyer_confirm',
     })
 
 @app.route('/api/orders/<int:order_id>/deliver', methods=['POST'])
@@ -727,12 +900,25 @@ def deliver_order(order_id):
         return jsonify({'error': 'Unauthorized'}), 403
     
     data = request.json
-    order.delivery_file = data.get('file_url')
+    try:
+        file_url = sanitize_text(data.get('file_url', ''), 2000)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+
+    order.delivery_file = file_url
     order.seller_message = data.get('message', '')
-    
+    order.delivered_at = datetime.utcnow()
+    order.status = 'in_progress'
+
     db.session.commit()
-    
-    return jsonify({'message': 'Order delivered successfully'})
+    security_audit_log('delivery', f'order={order_id}')
+
+    return jsonify({
+        'message': 'Delivery submitted. Buyer must confirm they received the AMV. If not, AI verifies in background.',
+        'auto_ai_verify_hours': AUTO_VERIFY_HOURS,
+        'escrow_status': 'held',
+        'ai_engines': list(AI_ENGINES),
+    })
 
 @app.route('/api/orders/my-orders', methods=['GET'])
 @jwt_required()
@@ -752,9 +938,15 @@ def get_my_orders():
             'amount': o.amount,
             'status': o.status,
             'escrow_status': o.escrow_status,
+            'delivery_file': o.delivery_file,
+            'delivered_at': o.delivered_at.isoformat() if o.delivered_at else None,
+            'buyer_confirmed': o.buyer_confirmed,
+            'ai_verified': o.ai_verified,
+            'ai_verification_score': o.ai_verification_score,
+            'release_method': o.release_method,
             'created_at': o.created_at.isoformat(),
             'buyer': User.query.get(o.buyer_id).username,
-            'seller': User.query.get(o.seller_id).username
+            'seller': User.query.get(o.seller_id).username,
         } for o in orders]
     })
 
@@ -1000,7 +1192,7 @@ def search():
     page = int(request.args.get('page', 1))
     per_page = int(request.args.get('per_page', 24))
 
-    gigs_query = Gig.query.filter_by(is_active=True)
+    gigs_query = Gig.query.filter_by(is_active=True, flagged_fake=False)
 
     if category != 'all':
         gigs_query = gigs_query.filter_by(category=category)
@@ -1065,7 +1257,97 @@ def search():
         } for g, score in page_items]
     })
 
-if __name__ == '__main__':
+@app.route('/api/orders/<int:order_id>/request-ai-verify', methods=['POST'])
+@jwt_required()
+def request_ai_verify(order_id):
+    """Buyer requests immediate AI escrow verification (Claude + Codex + Cursor engines)."""
+    user_id = get_jwt_identity()
+    order = Order.query.get_or_404(order_id)
+    if order.buyer_id != user_id and order.seller_id != user_id:
+        return jsonify({'error': 'Unauthorized'}), 403
+    if not order.delivery_file:
+        return jsonify({'error': 'No delivery to verify yet'}), 400
+    if order.escrow_status != 'held':
+        return jsonify({'error': 'Escrow already settled'}), 400
+
+    gig = Gig.query.get(order.gig_id)
+    result = verify_delivery_for_escrow(order, gig)
+    order.ai_verification_score = result['score']
+    order.ai_verification_notes = json.dumps(result)
+
+    if result['passed']:
+        order.ai_verified = True
+        if order.buyer_id == user_id or order.seller_id == user_id:
+            release_escrow_order(order, 'ai_auto')
+        msg = 'AI verified delivery — escrow released to seller'
+    else:
+        order.status = 'disputed'
+        msg = 'AI could not verify delivery — dispute opened, escrow held'
+
+    db.session.commit()
+    return jsonify({
+        'message': msg,
+        'ai_result': result,
+        'engines': list(AI_ENGINES),
+    })
+
+
+@app.route('/api/ai/guard/status', methods=['GET'])
+def ai_guard_status():
+    return jsonify({
+        'active': True,
+        'engines': list(AI_ENGINES),
+        'auto_verify_hours': AUTO_VERIFY_HOURS,
+        'features': [
+            'escrow_buyer_confirm_first',
+            'ai_background_escrow_verify',
+            'fake_amv_listing_block',
+            'rate_limit_and_injection_block',
+        ],
+    })
+
+
+@app.route('/api/ai/scan-marketplace', methods=['POST'])
+@jwt_required()
+def scan_marketplace_fake():
+    """Background-style sweep: deactivate fake AMVs (admin/seller with JWT)."""
+    removed = 0
+    gigs = Gig.query.filter_by(is_active=True, flagged_fake=False).all()
+    for g in gigs:
+        scan = scan_listing_for_fake(g.title, g.description or '', g.category, g.video_url, g.thumbnail)
+        if scan['is_fake']:
+            g.flagged_fake = True
+            g.is_active = False
+            g.ai_scan_notes = json.dumps(scan)
+            removed += 1
+    db.session.commit()
+    return jsonify({'removed_fake_listings': removed})
+
+
+_worker_started = False
+_worker_lock = threading.Lock()
+
+
+def init_vortex():
     with app.app_context():
         db.create_all()
+        _migrate_schema()
+
+
+def ensure_background_workers():
+    global _worker_started
+    with _worker_lock:
+        if not _worker_started:
+            start_background_workers(app)
+            _worker_started = True
+
+
+@app.before_request
+def _boot_workers_once():
+    ensure_background_workers()
+
+
+init_vortex()
+
+if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)

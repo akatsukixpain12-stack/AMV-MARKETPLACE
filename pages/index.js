@@ -133,7 +133,7 @@ export default function Home() {
             <div className="text-xs text-white/50 uppercase tracking-widest mb-3">Protection</div>
             <h2 className="text-display text-5xl md:text-7xl mb-4">ZERO SCAM POLICY</h2>
             <p className="text-white/60 max-w-xl mx-auto">
-              Every transaction escrowed. Every editor AI-scored. Buyers and sellers always protected.
+              Buyer confirms the AMV first, or AI (Claude, Codex, Cursor) verifies delivery. Fake AMVs removed automatically.
             </p>
           </div>
 
