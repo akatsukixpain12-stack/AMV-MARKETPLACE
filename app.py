@@ -7,6 +7,8 @@ from datetime import datetime, timedelta
 import os
 import json
 import hashlib
+import re
+import tempfile
 import cv2
 import numpy as np
 from PIL import Image
@@ -16,6 +18,15 @@ from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
 import razorpay
 import stripe
+
+UPLOAD_FOLDER = os.path.join(os.path.dirname(__file__), 'uploads')
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
+try:
+    from rembg import remove as rembg_remove
+    REMBG_AVAILABLE = True
+except ImportError:
+    REMBG_AVAILABLE = False
 
 app = Flask(__name__)
 CORS(app)
@@ -151,6 +162,103 @@ def detect_plagiarism(content_hash, threshold=5):
         if distance <= threshold:
             return True, fp.gig_id
     return False, None
+
+def extract_video_frame_hashes(video_path, max_frames=12):
+    """Sample frames from video for stolen-edit detection"""
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        return []
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 1
+    step = max(1, total // max_frames)
+    hashes = []
+    for i in range(0, min(total, max_frames * step), step):
+        cap.set(cv2.CAP_PROP_POS_FRAMES, i)
+        ret, frame = cap.read()
+        if not ret:
+            break
+        _, buf = cv2.imencode('.jpg', frame)
+        h = calculate_perceptual_hash(buf.tobytes())
+        if h:
+            hashes.append(h)
+    cap.release()
+    return hashes
+
+def detect_video_plagiarism(frame_hashes, threshold=6):
+    """Match video frames against stored fingerprints"""
+    if not frame_hashes:
+        return False, None, 0.0
+    all_fingerprints = ContentFingerprint.query.all()
+    best_match = None
+    best_score = 0
+    for fp in all_fingerprints:
+        matches = sum(1 for h in frame_hashes if hamming_distance(h, fp.fingerprint) <= threshold)
+        score = matches / len(frame_hashes)
+        if score > best_score:
+            best_score = score
+            best_match = fp.gig_id
+    if best_score >= 0.35:
+        return True, best_match, round(best_score, 2)
+    return False, None, best_score
+
+def remove_background_cv2(img_bytes):
+    """Fallback background removal using GrabCut"""
+    nparr = np.frombuffer(img_bytes, np.uint8)
+    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    if img is None:
+        return None
+    mask = np.zeros(img.shape[:2], np.uint8)
+    rect = (10, 10, img.shape[1] - 20, img.shape[0] - 20)
+    bgd, fgd = np.zeros((1, 65), np.float64), np.zeros((1, 65), np.float64)
+    cv2.grabCut(img, mask, rect, bgd, fgd, 3, cv2.GC_INIT_WITH_RECT)
+    mask2 = np.where((mask == 2) | (mask == 0), 0, 1).astype('uint8')
+    rgba = cv2.cvtColor(img, cv2.COLOR_BGR2BGRA)
+    rgba[:, :, 3] = mask2 * 255
+    _, buf = cv2.imencode('.png', rgba)
+    return buf.tobytes()
+
+def apply_chroma_key(img_bytes, key_color=(0, 255, 0), tolerance=40, feather=3):
+    """Remove green screen from image"""
+    nparr = np.frombuffer(img_bytes, np.uint8)
+    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    if img is None:
+        return None
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    key = np.uint8([[key_color]])
+    key_hsv = cv2.cvtColor(key, cv2.COLOR_BGR2HSV)[0][0]
+    lower = np.array([max(0, key_hsv[0] - tolerance // 2), 40, 40])
+    upper = np.array([min(179, key_hsv[0] + tolerance // 2), 255, 255])
+    mask = cv2.inRange(hsv, lower, upper)
+    if feather > 0:
+        mask = cv2.GaussianBlur(mask, (feather * 2 + 1, feather * 2 + 1), 0)
+    rgba = cv2.cvtColor(img, cv2.COLOR_BGR2BGRA)
+    rgba[:, :, 3] = 255 - mask
+    _, buf = cv2.imencode('.png', rgba)
+    return buf.tobytes()
+
+def search_relevance_score(gig, query_tokens):
+    """Score gig relevance for powerful search"""
+    if not query_tokens:
+        return gig.rating * 10 + gig.total_orders
+    title = (gig.title or '').lower()
+    desc = (gig.description or '').lower()
+    tags = (gig.tags or '').lower()
+    seller = User.query.get(gig.seller_id)
+    seller_name = (seller.username if seller else '').lower()
+    score = gig.rating * 2 + min(gig.total_orders, 50) * 0.1
+    for token in query_tokens:
+        if token in title:
+            score += 25
+        if title.startswith(token):
+            score += 10
+        if token in desc:
+            score += 8
+        if token in tags:
+            score += 12
+        if token in seller_name:
+            score += 6
+        if token in (gig.category or '').lower():
+            score += 15
+    return score
 
 def update_gig_rating(gig_id):
     """Recalculate gig rating based on reviews"""
