@@ -1,9 +1,12 @@
 import '../styles/globals.css';
 import { useEffect } from 'react';
 import { Toaster } from 'react-hot-toast';
+import { GoogleOAuthProvider } from '@react-oauth/google';
 import { useAuthStore } from '../lib/store';
 import { getCurrentUser } from '../lib/api';
 import Navbar from '../components/Navbar';
+
+const googleClientId = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID || '000000000000-00000000000000000000000.apps.googleusercontent.com';
 
 function MyApp({ Component, pageProps }) {
   const { setAuth } = useAuthStore();
@@ -18,7 +21,7 @@ function MyApp({ Component, pageProps }) {
   }, []);
 
   return (
-    <>
+    <GoogleOAuthProvider clientId={googleClientId}>
       <Navbar />
       <Component {...pageProps} />
       <Toaster 
@@ -31,7 +34,7 @@ function MyApp({ Component, pageProps }) {
           },
         }}
       />
-    </>
+    </GoogleOAuthProvider>
   );
 }
 

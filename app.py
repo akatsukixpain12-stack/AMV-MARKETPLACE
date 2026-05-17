@@ -130,6 +130,12 @@ class Order(db.Model):
     ai_verification_score = db.Column(db.Float)
     ai_verification_notes = db.Column(db.Text)
     release_method = db.Column(db.String(30))  # buyer_confirm, ai_auto
+    package_id = db.Column(db.Integer)
+    coupon_code = db.Column(db.String(30))
+    discount_amount = db.Column(db.Float, default=0.0)
+    revisions_used = db.Column(db.Integer, default=0)
+    max_revisions = db.Column(db.Integer, default=1)
+    due_date = db.Column(db.DateTime)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     completed_at = db.Column(db.DateTime)
 
@@ -168,6 +174,12 @@ class PlatformFee(db.Model):
     recipient_upi = db.Column(db.String(100), nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
+# Full Fiverr-class marketplace APIs (registered before routes use helpers)
+_mp_helpers = {'User': User, 'Gig': Gig, 'Order': Order, 'Review': Review, 'AI_ENGINES': AI_ENGINES}
+from marketplace_full import register_marketplace
+_mp_exports = register_marketplace(app, db, jwt_required, get_jwt_identity, sanitize_text, _mp_helpers)
+GigPackage = _mp_exports['GigPackage']
+
 # ==================== HELPER FUNCTIONS ====================
 
 def _migrate_schema():
@@ -181,6 +193,9 @@ def _migrate_schema():
         'delivered_at': 'DATETIME', 'buyer_confirmed': 'BOOLEAN DEFAULT 0',
         'ai_verified': 'BOOLEAN DEFAULT 0', 'ai_verification_score': 'FLOAT',
         'ai_verification_notes': 'TEXT', 'release_method': 'VARCHAR(30)',
+        'package_id': 'INTEGER', 'coupon_code': 'VARCHAR(30)',
+        'discount_amount': 'FLOAT DEFAULT 0', 'revisions_used': 'INTEGER DEFAULT 0',
+        'max_revisions': 'INTEGER DEFAULT 1', 'due_date': 'DATETIME',
     }
     gig_new = {
         'ai_quality_score': 'FLOAT DEFAULT 0', 'is_verified_listing': 'BOOLEAN DEFAULT 0',
@@ -665,7 +680,12 @@ def get_gig(gig_id):
             'comment': r.comment,
             'created_at': r.created_at.isoformat(),
             'reviewer': User.query.get(r.reviewer_id).username
-        } for r in reviews]
+        } for r in reviews],
+        'packages': [{
+            'id': p.id, 'tier': p.tier, 'title': p.title,
+            'price': p.price, 'delivery_days': p.delivery_days, 'revisions': p.revisions,
+        } for p in GigPackage.query.filter_by(gig_id=gig.id).order_by(GigPackage.price).all()],
+        'seller_level': _mp_helpers['seller_level_for'](gig.seller_id),
     })
 
 @app.route('/api/gigs', methods=['POST'])
@@ -722,6 +742,11 @@ def create_gig():
     )
     
     db.session.add(gig)
+    db.session.flush()
+
+    if _mp_helpers.get('ensure_default_packages'):
+        _mp_helpers['ensure_default_packages'](gig)
+
     db.session.commit()
     
     # Store content fingerprint
@@ -938,6 +963,9 @@ def get_my_orders():
             'amount': o.amount,
             'status': o.status,
             'escrow_status': o.escrow_status,
+            'due_date': o.due_date.isoformat() if o.due_date else None,
+            'max_revisions': o.max_revisions,
+            'revisions_used': o.revisions_used,
             'delivery_file': o.delivery_file,
             'delivered_at': o.delivered_at.isoformat() if o.delivered_at else None,
             'buyer_confirmed': o.buyer_confirmed,
@@ -1303,6 +1331,8 @@ def ai_guard_status():
             'ai_background_escrow_verify',
             'fake_amv_listing_block',
             'rate_limit_and_injection_block',
+            'fiverr_full_marketplace',
+            'packages_extras_messaging_revisions',
         ],
     })
 

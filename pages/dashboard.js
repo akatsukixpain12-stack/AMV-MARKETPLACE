@@ -1,87 +1,190 @@
-import { useEffect } from 'react';
-import Head from 'next/head';
-import Link from 'next/link';
+import { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
-import Navbar from '../components/Navbar';
+import Link from 'next/link';
+import { Package, DollarSign, Star, TrendingUp } from 'lucide-react';
 import { useAuthStore } from '../lib/store';
 import { getMyOrders } from '../lib/api';
-import { useState } from 'react';
-import { Wallet, Package, PlusCircle, Wand2 } from 'lucide-react';
 
 export default function Dashboard() {
   const router = useRouter();
   const { user, isAuthenticated } = useAuthStore();
   const [orders, setOrders] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [activeTab, setActiveTab] = useState('buyer');
 
   useEffect(() => {
     if (!isAuthenticated) {
       router.push('/login');
       return;
     }
-    Promise.all([
-      getMyOrders('buyer'),
-      getMyOrders('seller'),
-    ]).then(([buyer, seller]) => {
-      setOrders([...buyer.data.orders, ...seller.data.orders].slice(0, 5));
-    }).catch(console.error);
-  }, [isAuthenticated, router]);
+    loadOrders();
+  }, [isAuthenticated, activeTab]);
 
-  if (!isAuthenticated) return null;
+  const loadOrders = async () => {
+    setLoading(true);
+    try {
+      const res = await getMyOrders(activeTab);
+      setOrders(res.data.orders || []);
+    } catch (error) {
+      console.error('Failed to load orders:', error);
+      setOrders([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (!isAuthenticated) {
+    return null;
+  }
 
   return (
-    <>
-      <Head><title>Dashboard - VORTEX</title></Head>
-      <Navbar />
-      <main className="pt-24 pb-16 px-6">
-        <div className="max-w-5xl mx-auto">
-          <h1 className="text-display text-5xl mb-2">DASHBOARD</h1>
-          <p className="text-white/60 mb-10">Welcome back, {user?.full_name || user?.username}</p>
+    <div className="min-h-screen bg-bg text-white pt-24 pb-20 px-6">
+      <div className="max-w-7xl mx-auto">
+        {/* Header */}
+        <div className="mb-12">
+          <h1 className="text-display text-6xl md:text-8xl mb-4">DASHBOARD</h1>
+          <p className="text-white/60 text-lg">Welcome back, {user?.username}!</p>
+        </div>
 
-          <div className="grid md:grid-cols-3 gap-4 mb-10">
-            <div className="bg-[#131313] border border-white/10 rounded-xl p-6">
-              <Wallet className="w-8 h-8 text-green-400 mb-3" />
-              <p className="text-sm text-white/50">Balance</p>
-              <p className="text-display text-4xl">₹{user?.balance?.toFixed(2) || '0.00'}</p>
-              <Link href="/wallet" className="text-sm text-purple-400 mt-2 inline-block">Withdraw →</Link>
-            </div>
-            <div className="bg-[#131313] border border-white/10 rounded-xl p-6">
-              <Package className="w-8 h-8 text-purple-400 mb-3" />
-              <p className="text-sm text-white/50">Trust score</p>
-              <p className="text-display text-4xl">{user?.trust_score || 5}</p>
-            </div>
-            <div className="bg-[#131313] border border-white/10 rounded-xl p-6">
-              <Wand2 className="w-8 h-8 text-pink-400 mb-3" />
-              <p className="text-sm text-white/50">AI tools</p>
-              <Link href="/ai-tools" className="text-sm text-purple-400 mt-2 inline-block">Open tools →</Link>
+        {/* Stats */}
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-12">
+          <div className="bg-card border border-white/10 rounded-2xl p-6">
+            <div className="flex items-center gap-4 mb-3">
+              <div className="w-12 h-12 rounded-xl bg-purple-500/20 flex items-center justify-center">
+                <Package className="w-6 h-6 text-purple-500" />
+              </div>
+              <div>
+                <div className="text-3xl font-bold">{orders.length}</div>
+                <div className="text-sm text-white/50">Total Orders</div>
+              </div>
             </div>
           </div>
 
-          <div className="flex flex-wrap gap-3 mb-10">
-            <Link href="/create-gig" className="flex items-center gap-2 px-5 py-3 rounded-xl bg-white text-black font-semibold">
-              <PlusCircle className="w-5 h-5" /> Create gig
-            </Link>
-            <Link href="/orders" className="px-5 py-3 rounded-xl border border-white/10 hover:bg-white/5">Orders</Link>
-            <Link href="/marketplace" className="px-5 py-3 rounded-xl border border-white/10 hover:bg-white/5">Browse marketplace</Link>
+          <div className="bg-card border border-white/10 rounded-2xl p-6">
+            <div className="flex items-center gap-4 mb-3">
+              <div className="w-12 h-12 rounded-xl bg-green-500/20 flex items-center justify-center">
+                <DollarSign className="w-6 h-6 text-green-500" />
+              </div>
+              <div>
+                <div className="text-3xl font-bold">₹{user?.balance?.toFixed(2) || '0.00'}</div>
+                <div className="text-sm text-white/50">Balance</div>
+              </div>
+            </div>
           </div>
 
-          <h2 className="text-xl font-semibold mb-4">Recent orders</h2>
-          {orders.length === 0 ? (
-            <p className="text-white/50">No orders yet. <Link href="/marketplace" className="text-purple-400">Find a gig</Link></p>
+          <div className="bg-card border border-white/10 rounded-2xl p-6">
+            <div className="flex items-center gap-4 mb-3">
+              <div className="w-12 h-12 rounded-xl bg-yellow-500/20 flex items-center justify-center">
+                <Star className="w-6 h-6 text-yellow-500" />
+              </div>
+              <div>
+                <div className="text-3xl font-bold">{user?.trust_score?.toFixed(1) || '5.0'}</div>
+                <div className="text-sm text-white/50">Trust Score</div>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-card border border-white/10 rounded-2xl p-6">
+            <div className="flex items-center gap-4 mb-3">
+              <div className="w-12 h-12 rounded-xl bg-blue-500/20 flex items-center justify-center">
+                <TrendingUp className="w-6 h-6 text-blue-500" />
+              </div>
+              <div>
+                <div className="text-3xl font-bold">{user?.is_seller ? 'Seller' : 'Buyer'}</div>
+                <div className="text-sm text-white/50">Account Type</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Quick Actions */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-12">
+          <Link href="/marketplace" className="bg-gradient-to-br from-purple-600 to-blue-600 rounded-2xl p-6 hover:scale-105 transition">
+            <h3 className="text-xl font-bold mb-2">Browse Marketplace</h3>
+            <p className="text-white/80 text-sm">Find talented editors</p>
+          </Link>
+
+          <Link href="/create-gig" className="bg-gradient-to-br from-green-600 to-teal-600 rounded-2xl p-6 hover:scale-105 transition">
+            <h3 className="text-xl font-bold mb-2">Create Gig</h3>
+            <p className="text-white/80 text-sm">Start selling your services</p>
+          </Link>
+
+          <Link href="/wallet" className="bg-gradient-to-br from-orange-600 to-red-600 rounded-2xl p-6 hover:scale-105 transition">
+            <h3 className="text-xl font-bold mb-2">Wallet</h3>
+            <p className="text-white/80 text-sm">Manage your earnings</p>
+          </Link>
+        </div>
+
+        {/* Orders */}
+        <div className="bg-card border border-white/10 rounded-2xl p-8">
+          <div className="flex items-center justify-between mb-6">
+            <h2 className="text-2xl font-bold">My Orders</h2>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setActiveTab('buyer')}
+                className={`px-4 py-2 rounded-lg text-sm transition ${
+                  activeTab === 'buyer' ? 'bg-white text-black' : 'border border-white/20 hover:bg-white/5'
+                }`}
+              >
+                As Buyer
+              </button>
+              <button
+                onClick={() => setActiveTab('seller')}
+                className={`px-4 py-2 rounded-lg text-sm transition ${
+                  activeTab === 'seller' ? 'bg-white text-black' : 'border border-white/20 hover:bg-white/5'
+                }`}
+              >
+                As Seller
+              </button>
+            </div>
+          </div>
+
+          {loading ? (
+            <div className="text-center py-12">
+              <div className="animate-spin w-8 h-8 border-2 border-white/20 border-t-white rounded-full mx-auto mb-3" />
+              <p className="text-white/60">Loading orders...</p>
+            </div>
+          ) : orders.length === 0 ? (
+            <div className="text-center py-12">
+              <p className="text-white/60 mb-4">No orders yet</p>
+              <Link href="/marketplace" className="inline-block px-6 py-3 rounded-lg bg-white text-black font-semibold hover:bg-gray-200 transition">
+                Browse Marketplace
+              </Link>
+            </div>
           ) : (
-            <div className="space-y-3">
-              {orders.map((o) => (
-                <div key={o.id} className="bg-[#131313] border border-white/10 rounded-xl p-4 flex justify-between items-center">
-                  <div>
-                    <p className="font-medium">{o.gig_title}</p>
-                    <p className="text-sm text-white/50">{o.status} · escrow: {o.escrow_status}</p>
+            <div className="space-y-4">
+              {orders.map((order) => (
+                <div key={order.id} className="bg-surface border border-white/10 rounded-xl p-6 hover:border-white/20 transition">
+                  <div className="flex justify-between items-start mb-3">
+                    <div>
+                      <h3 className="font-semibold mb-1">{order.gig_title}</h3>
+                      <p className="text-sm text-white/50">
+                        {activeTab === 'buyer' ? `Seller: ${order.seller}` : `Buyer: ${order.buyer}`}
+                      </p>
+                    </div>
+                    <div className="text-right">
+                      <div className="text-xl font-bold">₹{order.amount}</div>
+                      <div className={`text-xs px-3 py-1 rounded-full inline-block mt-1 ${
+                        order.status === 'completed' ? 'bg-green-500/20 text-green-500' :
+                        order.status === 'in_progress' ? 'bg-blue-500/20 text-blue-500' :
+                        'bg-yellow-500/20 text-yellow-500'
+                      }`}>
+                        {order.status}
+                      </div>
+                    </div>
                   </div>
-                  <span className="text-display text-xl">₹{o.amount}</span>
+                  <div className="flex justify-between items-center text-sm text-white/50">
+                    <span>{new Date(order.created_at).toLocaleDateString()}</span>
+                    <Link href={`/order/${order.id}`} className="text-white hover:underline">
+                      View Details →
+                    </Link>
+                  </div>
                 </div>
               ))}
             </div>
           )}
         </div>
-      </main>
-    </>
+      </div>
+    </div>
   );
 }
