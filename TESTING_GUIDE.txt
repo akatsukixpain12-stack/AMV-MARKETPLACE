@@ -1,0 +1,237 @@
+========================================
+VORTEX MARKETPLACE - TESTING GUIDE
+========================================
+
+✅ FIXES APPLIED:
+- Removed Google OAuth dependency (will add later with proper config)
+- Fixed signup/login pages to work with email only
+- Added missing pages (marketplace, dashboard, how-it-works)
+- All pages now load without errors
+
+========================================
+HOW TO TEST - STEP BY STEP
+========================================
+
+1. OPEN THE WEBSITE
+   👉 http://localhost:3000
+   
+   You should see:
+   - Beautiful homepage
+   - Navigation bar with menu
+   - Donate button (your UPI link)
+   - Featured gigs section
+   - AI Tools section
+
+2. TEST SIGN UP (EMAIL)
+   - Click "Sign Up" button in top right
+   - Fill in the form:
+     * Full Name: Test User
+     * Username: testuser123
+     * Email: test@example.com
+     * Password: password123
+     * Confirm Password: password123
+   - Click "Create Account"
+   - You should be redirected to dashboard
+
+3. TEST LOGIN
+   - Click "Login" button
+   - Enter:
+     * Email: test@example.com
+     * Password: password123
+   - Click "Login"
+   - You should see dashboard
+
+4. TEST MARKETPLACE
+   - Click "Marketplace" in navigation
+   - You should see:
+     * Search bar
+     * Category filters (All, AMV, Gaming, TikTok, Motion)
+     * Message: "No gigs found" (database is empty)
+     * Button: "Create First Gig"
+
+5. TEST DASHBOARD
+   - After login, you're automatically on dashboard
+   - You should see:
+     * Welcome message with your username
+     * Stats cards (Orders, Balance, Trust Score, Account Type)
+     * Quick action buttons
+     * Orders section (empty for now)
+
+6. TEST AI TOOLS
+   - Click "AI Tools" in navigation
+   - You should see 4 tools:
+     * Background Remover (working)
+     * Green Screen (working)
+     * Stolen Edit Detector (working)
+     * Export Quality Scorer (coming soon)
+   - Click "Open Tool" on any working tool
+   - Upload an image and test
+
+7. TEST HOW IT WORKS
+   - Click "How It Works" in navigation
+   - You should see:
+     * Step-by-step guide for buyers
+     * Step-by-step guide for sellers
+     * Features section
+     * Call-to-action buttons
+
+8. TEST MOBILE MENU
+   - Resize browser to mobile size (or use DevTools)
+   - Click hamburger menu (three lines) in top right
+   - Menu should slide down with all links
+   - Test navigation
+
+9. TEST DONATE BUTTON
+   - Click the pink "Donate" button in navigation
+   - Should open your UPI link: https://urpy.link/gkLVl4
+
+========================================
+KNOWN LIMITATIONS (TO FIX LATER)
+========================================
+
+❌ Google OAuth - Needs Google Cloud Console setup
+❌ Payment Processing - Needs Razorpay API keys
+❌ No gigs in marketplace - Database is empty
+❌ Can't create gigs yet - Need to add create-gig page
+❌ Can't place orders - Need gig details page
+
+========================================
+WHAT'S WORKING NOW
+========================================
+
+✅ Homepage with all sections
+✅ Email signup/login
+✅ User authentication (JWT)
+✅ Dashboard with stats
+✅ Marketplace page (structure)
+✅ AI Tools (all 3 working)
+✅ How It Works page
+✅ Mobile responsive design
+✅ Hamburger menu
+✅ Donate button
+✅ Navigation
+✅ Backend API (Flask)
+✅ Database (SQLite)
+
+========================================
+NEXT STEPS TO MAKE IT FULLY FUNCTIONAL
+========================================
+
+1. ADD GOOGLE OAUTH:
+   - Get Google Client ID from Google Cloud Console
+   - Add to .env file
+   - Uncomment Google OAuth code
+
+2. ADD PAYMENT KEYS:
+   - Sign up for Razorpay
+   - Get API keys
+   - Add to .env file
+
+3. CREATE SAMPLE GIGS:
+   - Add create-gig page
+   - Create some test gigs
+   - Marketplace will show them
+
+4. ADD GIG DETAILS PAGE:
+   - Create /gig/[id].js page
+   - Show gig details
+   - Add "Order" button
+
+5. ADD ORDER FLOW:
+   - Create order page
+   - Add payment integration
+   - Add delivery system
+
+========================================
+TESTING CHECKLIST
+========================================
+
+Homepage:
+[ ] Loads without errors
+[ ] All sections visible
+[ ] Navigation works
+[ ] Donate button works
+[ ] Mobile responsive
+
+Sign Up:
+[ ] Form validation works
+[ ] Can create account
+[ ] Redirects to dashboard
+[ ] Shows success message
+
+Login:
+[ ] Can login with created account
+[ ] Redirects to dashboard
+[ ] Shows welcome message
+[ ] Logout works
+
+Dashboard:
+[ ] Shows user stats
+[ ] Quick actions visible
+[ ] Orders section works
+[ ] Can switch buyer/seller tabs
+
+Marketplace:
+[ ] Page loads
+[ ] Search bar visible
+[ ] Category filters work
+[ ] Shows "no gigs" message
+
+AI Tools:
+[ ] All tools listed
+[ ] Can open tool modals
+[ ] Background remover works
+[ ] Green screen works
+[ ] Plagiarism detector works
+
+How It Works:
+[ ] Page loads
+[ ] Buyer steps visible
+[ ] Seller steps visible
+[ ] CTA buttons work
+
+Mobile:
+[ ] Hamburger menu appears
+[ ] Menu opens/closes
+[ ] All links work
+[ ] Responsive layout
+
+========================================
+TROUBLESHOOTING
+========================================
+
+If signup doesn't work:
+1. Check browser console (F12)
+2. Check if backend is running (http://localhost:5000)
+3. Try different username/email
+4. Check password matches
+
+If pages don't load:
+1. Refresh the page
+2. Clear browser cache
+3. Check both servers are running
+4. Look at terminal for errors
+
+If AI tools don't work:
+1. Try smaller image (< 5MB)
+2. Use PNG or JPG format
+3. Check browser console for errors
+
+========================================
+CURRENT SERVER STATUS
+========================================
+
+Backend: http://127.0.0.1:5000 ✅
+Frontend: http://localhost:3000 ✅
+
+Both servers are running!
+
+========================================
+
+🎉 START TESTING NOW!
+
+Open http://localhost:3000 and follow the steps above.
+
+Report any issues you find!
+
+========================================

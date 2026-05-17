@@ -45,7 +45,7 @@ export default function Signup() {
       });
       setAuth(res.data.user, res.data.token);
       toast.success('Account created successfully!');
-      router.push('/dashboard');
+      router.push('/select-role');
     } catch (error) {
       toast.error(error.response?.data?.error || 'Signup failed');
     } finally {

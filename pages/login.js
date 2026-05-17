@@ -20,7 +20,13 @@ export default function Login() {
       const res = await login({ email, password });
       setAuth(res.data.user, res.data.token);
       toast.success('Welcome back!');
-      router.push('/dashboard');
+      
+      // Check if user has selected a role
+      if (!res.data.user.account_type) {
+        router.push('/select-role');
+      } else {
+        router.push('/dashboard');
+      }
     } catch (error) {
       toast.error(error.response?.data?.error || 'Login failed');
     } finally {

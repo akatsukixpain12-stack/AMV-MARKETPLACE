@@ -1,22 +1,33 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
 import Link from 'next/link';
-import { Package, DollarSign, Star, TrendingUp } from 'lucide-react';
+import { Package, DollarSign, Star, TrendingUp, RefreshCw } from 'lucide-react';
 import { useAuthStore } from '../lib/store';
 import { getMyOrders } from '../lib/api';
+import api from '../lib/api';
+import toast from 'react-hot-toast';
 
 export default function Dashboard() {
   const router = useRouter();
-  const { user, isAuthenticated } = useAuthStore();
+  const { user, isAuthenticated, updateUser } = useAuthStore();
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('buyer');
+  const [currentRole, setCurrentRole] = useState('buyer');
 
   useEffect(() => {
     if (!isAuthenticated) {
       router.push('/login');
       return;
     }
+    
+    // Check if user has selected a role
+    if (!user?.account_type && !user?.is_seller) {
+      router.push('/select-role');
+      return;
+    }
+    
+    setCurrentRole(user?.is_seller ? 'seller' : 'buyer');
     loadOrders();
   }, [isAuthenticated, activeTab]);
 
@@ -33,6 +44,17 @@ export default function Dashboard() {
     }
   };
 
+  const handleRoleSwitch = async (newRole) => {
+    try {
+      const res = await api.post('/user/switch-role', { role: newRole });
+      setCurrentRole(newRole);
+      updateUser({ is_seller: newRole === 'seller' });
+      toast.success(`Switched to ${newRole} mode!`);
+    } catch (error) {
+      toast.error('Failed to switch role');
+    }
+  };
+
   if (!isAuthenticated) {
     return null;
   }
@@ -42,8 +64,45 @@ export default function Dashboard() {
       <div className="max-w-7xl mx-auto">
         {/* Header */}
         <div className="mb-12">
-          <h1 className="text-display text-6xl md:text-8xl mb-4">DASHBOARD</h1>
-          <p className="text-white/60 text-lg">Welcome back, {user?.username}!</p>
+          <div className="flex flex-wrap items-center justify-between gap-4 mb-4">
+            <div>
+              <h1 className="text-display text-6xl md:text-8xl mb-2">DASHBOARD</h1>
+              <p className="text-white/60 text-lg">Welcome back, {user?.username}!</p>
+            </div>
+            
+            {/* Role Switcher */}
+            <div className="flex items-center gap-3 bg-card border border-white/10 rounded-xl p-2">
+              <button
+                onClick={() => handleRoleSwitch('buyer')}
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition ${
+                  currentRole === 'buyer'
+                    ? 'bg-gradient-to-r from-purple-600 to-blue-600 text-white'
+                    : 'text-white/60 hover:text-white'
+                }`}
+              >
+                <Package className="w-4 h-4" />
+                Buyer Mode
+              </button>
+              <button
+                onClick={() => handleRoleSwitch('seller')}
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition ${
+                  currentRole === 'seller'
+                    ? 'bg-gradient-to-r from-green-600 to-teal-600 text-white'
+                    : 'text-white/60 hover:text-white'
+                }`}
+              >
+                <DollarSign className="w-4 h-4" />
+                Seller Mode
+              </button>
+            </div>
+          </div>
+          
+          <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-white/5 border border-white/10">
+            <div className={`w-2 h-2 rounded-full ${currentRole === 'seller' ? 'bg-green-500' : 'bg-purple-500'} animate-pulse`} />
+            <span className="text-sm">
+              Currently in <span className="font-semibold capitalize">{currentRole}</span> mode
+            </span>
+          </div>
         </div>
 
         {/* Stats */}
@@ -99,20 +158,41 @@ export default function Dashboard() {
 
         {/* Quick Actions */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-12">
-          <Link href="/marketplace" className="bg-gradient-to-br from-purple-600 to-blue-600 rounded-2xl p-6 hover:scale-105 transition">
-            <h3 className="text-xl font-bold mb-2">Browse Marketplace</h3>
-            <p className="text-white/80 text-sm">Find talented editors</p>
-          </Link>
+          {currentRole === 'buyer' ? (
+            <>
+              <Link href="/marketplace" className="bg-gradient-to-br from-purple-600 to-blue-600 rounded-2xl p-6 hover:scale-105 transition">
+                <h3 className="text-xl font-bold mb-2">Browse Marketplace</h3>
+                <p className="text-white/80 text-sm">Find talented editors</p>
+              </Link>
 
-          <Link href="/create-gig" className="bg-gradient-to-br from-green-600 to-teal-600 rounded-2xl p-6 hover:scale-105 transition">
-            <h3 className="text-xl font-bold mb-2">Create Gig</h3>
-            <p className="text-white/80 text-sm">Start selling your services</p>
-          </Link>
+              <Link href="/ai-tools" className="bg-gradient-to-br from-blue-600 to-cyan-600 rounded-2xl p-6 hover:scale-105 transition">
+                <h3 className="text-xl font-bold mb-2">AI Tools</h3>
+                <p className="text-white/80 text-sm">Use free editing tools</p>
+              </Link>
 
-          <Link href="/wallet" className="bg-gradient-to-br from-orange-600 to-red-600 rounded-2xl p-6 hover:scale-105 transition">
-            <h3 className="text-xl font-bold mb-2">Wallet</h3>
-            <p className="text-white/80 text-sm">Manage your earnings</p>
-          </Link>
+              <Link href="/orders" className="bg-gradient-to-br from-orange-600 to-red-600 rounded-2xl p-6 hover:scale-105 transition">
+                <h3 className="text-xl font-bold mb-2">My Orders</h3>
+                <p className="text-white/80 text-sm">Track your purchases</p>
+              </Link>
+            </>
+          ) : (
+            <>
+              <Link href="/create-gig" className="bg-gradient-to-br from-green-600 to-teal-600 rounded-2xl p-6 hover:scale-105 transition">
+                <h3 className="text-xl font-bold mb-2">Create Gig</h3>
+                <p className="text-white/80 text-sm">List your services</p>
+              </Link>
+
+              <Link href="/my-gigs" className="bg-gradient-to-br from-teal-600 to-blue-600 rounded-2xl p-6 hover:scale-105 transition">
+                <h3 className="text-xl font-bold mb-2">My Gigs</h3>
+                <p className="text-white/80 text-sm">Manage your listings</p>
+              </Link>
+
+              <Link href="/wallet" className="bg-gradient-to-br from-orange-600 to-red-600 rounded-2xl p-6 hover:scale-105 transition">
+                <h3 className="text-xl font-bold mb-2">Wallet</h3>
+                <p className="text-white/80 text-sm">Withdraw earnings</p>
+              </Link>
+            </>
+          )}
         </div>
 
         {/* Orders */}

@@ -1190,6 +1190,19 @@ def create_review():
     if order.status != 'completed':
         return jsonify({'error': 'Order must be completed first'}), 400
     
+    # AI-powered review analysis
+    analysis = ai_manager.analyze_review(
+        data.get('comment', ''),
+        float(data['rating'])
+    )
+    
+    # Check if review seems fake
+    if not analysis['is_genuine']:
+        return jsonify({
+            'error': 'Review appears suspicious',
+            'reason': 'AI detected potential fake review'
+        }), 400
+    
     review = Review(
         order_id=order.id,
         gig_id=order.gig_id,
@@ -1204,7 +1217,13 @@ def create_review():
     update_gig_rating(order.gig_id)
     update_seller_trust_score(order.seller_id)
     
-    return jsonify({'message': 'Review submitted successfully'}), 201
+    return jsonify({
+        'message': 'Review submitted successfully',
+        'ai_analysis': {
+            'sentiment': analysis['sentiment'],
+            'key_points': analysis['key_points']
+        }
+    }), 201
 
 # ==================== SEARCH ROUTES ====================
 
@@ -1381,3 +1400,214 @@ init_vortex()
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)
+
+
+# ==================== AI-POWERED ENDPOINTS ====================
+
+@app.route('/api/ai/optimize-gig', methods=['POST'])
+@jwt_required()
+def ai_optimize_gig():
+    """AI-powered gig optimization"""
+    data = request.json
+    
+    optimization = ai_manager.optimize_gig_description(
+        data['title'],
+        data['description'],
+        data['category']
+    )
+    
+    return jsonify(optimization)
+
+@app.route('/api/ai/moderate-content', methods=['POST'])
+@jwt_required()
+def ai_moderate_content():
+    """AI content moderation"""
+    data = request.json
+    
+    moderation = ai_manager.moderate_content(data['text'])
+    
+    return jsonify(moderation)
+
+@app.route('/api/ai/pricing-recommendation', methods=['POST'])
+@jwt_required()
+def ai_pricing_recommendation():
+    """AI-powered pricing recommendations"""
+    data = request.json
+    
+    # Get similar gigs for market analysis
+    similar_gigs = Gig.query.filter_by(
+        category=data['category'],
+        is_active=True
+    ).order_by(Gig.rating.desc()).limit(10).all()
+    
+    market_data = [{
+        'title': g.title,
+        'price': g.price,
+        'rating': g.rating,
+        'total_orders': g.total_orders
+    } for g in similar_gigs]
+    
+    recommendation = ai_manager.recommend_pricing(data, market_data)
+    
+    return jsonify(recommendation)
+
+@app.route('/api/ai/recommendations', methods=['GET'])
+@jwt_required()
+def ai_get_recommendations():
+    """AI-powered personalized gig recommendations"""
+    user_id = get_jwt_identity()
+    
+    # Get user's order history
+    orders = Order.query.filter_by(buyer_id=user_id).all()
+    history = [{
+        'gig_title': Gig.query.get(o.gig_id).title,
+        'category': Gig.query.get(o.gig_id).category,
+        'rating': Review.query.filter_by(order_id=o.id).first().rating if Review.query.filter_by(order_id=o.id).first() else None
+    } for o in orders]
+    
+    # Get available gigs
+    gigs = Gig.query.filter_by(is_active=True).limit(50).all()
+    gigs_list = [{
+        'id': g.id,
+        'title': g.title,
+        'category': g.category,
+        'price': g.price
+    } for g in gigs]
+    
+    recommended_ids = ai_manager.get_personalized_recommendations(history, gigs_list)
+    
+    # Get full gig details
+    recommended_gigs = [Gig.query.get(gid) for gid in recommended_ids if Gig.query.get(gid)]
+    
+    return jsonify({
+        'recommendations': [{
+            'id': g.id,
+            'title': g.title,
+            'description': g.description,
+            'category': g.category,
+            'price': g.price,
+            'rating': g.rating,
+            'seller': g.seller.username
+        } for g in recommended_gigs[:10]]
+    })
+
+@app.route('/api/ai/analyze-dispute', methods=['POST'])
+@jwt_required()
+def ai_analyze_dispute():
+    """AI-powered dispute analysis"""
+    data = request.json
+    order = Order.query.get_or_404(data['order_id'])
+    
+    analysis = ai_manager.analyze_dispute(
+        data['buyer_claim'],
+        data['seller_response'],
+        {
+            'amount': order.amount,
+            'delivery_days': Gig.query.get(order.gig_id).delivery_days,
+            'status': order.status
+        }
+    )
+    
+    return jsonify(analysis)
+
+@app.route('/api/ai/score-delivery', methods=['POST'])
+@jwt_required()
+def ai_score_delivery():
+    """AI-powered delivery quality scoring"""
+    data = request.json
+    
+    score = ai_manager.score_delivery_quality(
+        data['delivery_notes'],
+        data.get('expected_quality', 'high')
+    )
+    
+    return jsonify(score)
+
+
+# ==================== USER ROLE MANAGEMENT ====================
+
+@app.route('/api/user/set-role', methods=['POST'])
+@jwt_required()
+def set_user_role():
+    """Set user account type (buyer/seller)"""
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id)
+    data = request.json
+    
+    role = data.get('role', 'buyer')
+    
+    if role == 'seller':
+        user.is_seller = True
+    
+    # Store account type preference
+    if not hasattr(user, 'account_type'):
+        # Add account_type column if it doesn't exist
+        pass
+    
+    db.session.commit()
+    
+    return jsonify({
+        'message': f'Role set to {role}',
+        'user': {
+            'id': user.id,
+            'username': user.username,
+            'is_seller': user.is_seller,
+            'account_type': role
+        }
+    })
+
+@app.route('/api/user/switch-role', methods=['POST'])
+@jwt_required()
+def switch_user_role():
+    """Switch between buyer and seller roles"""
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id)
+    data = request.json
+    
+    new_role = data.get('role')
+    
+    if new_role == 'seller':
+        user.is_seller = True
+    
+    db.session.commit()
+    
+    return jsonify({
+        'message': f'Switched to {new_role} mode',
+        'user': {
+            'id': user.id,
+            'username': user.username,
+            'is_seller': user.is_seller,
+            'current_role': new_role
+        }
+    })
+
+@app.route('/api/user/profile', methods=['PUT'])
+@jwt_required()
+def update_user_profile():
+    """Update user profile"""
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id)
+    data = request.json
+    
+    if 'full_name' in data:
+        user.full_name = data['full_name']
+    if 'bio' in data:
+        user.bio = data['bio']
+    if 'upi_id' in data:
+        user.upi_id = data['upi_id']
+    if 'profile_image' in data:
+        user.profile_image = data['profile_image']
+    
+    db.session.commit()
+    
+    return jsonify({
+        'message': 'Profile updated successfully',
+        'user': {
+            'id': user.id,
+            'username': user.username,
+            'full_name': user.full_name,
+            'bio': user.bio,
+            'upi_id': user.upi_id,
+            'profile_image': user.profile_image
+        }
+    })
