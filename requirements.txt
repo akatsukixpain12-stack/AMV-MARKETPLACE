@@ -18,3 +18,5 @@ pymongo==4.6.0
 redis==5.0.1
 celery==5.3.4
 gunicorn==21.2.0
+rembg==2.0.50
+onnxruntime==1.16.3

@@ -5,7 +5,7 @@ import { useRouter } from 'next/router';
 import { register, googleAuth } from '../lib/api';
 import { useAuthStore } from '../lib/store';
 import toast from 'react-hot-toast';
-import { GoogleLogin } from '@react-oauth/google';
+import GoogleAuthButton from '../components/GoogleAuthButton';
 
 export default function Signup() {
   const router = useRouter();
@@ -151,16 +151,7 @@ export default function Signup() {
               <div className="flex-1 h-px bg-white/10" />
             </div>
 
-            <div className="flex justify-center">
-              <GoogleLogin
-                onSuccess={handleGoogleSuccess}
-                onError={() => toast.error('Google signup failed')}
-                theme="filled_black"
-                size="large"
-                text="signup_with"
-                shape="rectangular"
-              />
-            </div>
+            <GoogleAuthButton mode="signup" onSuccess={handleGoogleSuccess} />
 
             <p className="text-center text-sm text-white/60 mt-6">
               Already have an account?{' '}

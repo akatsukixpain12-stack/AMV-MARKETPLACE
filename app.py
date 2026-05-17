@@ -778,42 +778,151 @@ def withdrawal_history():
 
 @app.route('/api/ai/remove-background', methods=['POST'])
 def remove_background():
-    """AI Background removal"""
-    if 'image' not in request.files:
-        return jsonify({'error': 'No image provided'}), 400
-    
-    file = request.files['image']
-    img_bytes = file.read()
-    
-    # Use rembg or similar library for background removal
-    # For now, returning placeholder
-    return jsonify({'message': 'Background removed', 'processed_image': 'base64_data_here'})
+    """AI Background removal — image or video (first frame preview for video)"""
+    media_type = request.form.get('type', 'image')
+    file = request.files.get('image') or request.files.get('video') or request.files.get('file')
+    if not file:
+        return jsonify({'error': 'No file provided'}), 400
+
+    raw = file.read()
+    if media_type == 'video' or (file.filename and file.filename.lower().endswith(('.mp4', '.webm', '.mov', '.avi'))):
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4', dir=UPLOAD_FOLDER)
+        tmp.write(raw)
+        tmp.close()
+        cap = cv2.VideoCapture(tmp.name)
+        ret, frame = cap.read()
+        cap.release()
+        os.unlink(tmp.name)
+        if not ret:
+            return jsonify({'error': 'Could not read video'}), 400
+        _, buf = cv2.imencode('.jpg', frame)
+        raw = buf.tobytes()
+
+    try:
+        if REMBG_AVAILABLE:
+            out = rembg_remove(raw)
+        else:
+            out = remove_background_cv2(raw)
+        if not out:
+            return jsonify({'error': 'Processing failed'}), 500
+        b64 = base64.b64encode(out).decode('utf-8')
+        return jsonify({
+            'message': 'Background removed',
+            'processed_image': f'data:image/png;base64,{b64}',
+            'engine': 'rembg' if REMBG_AVAILABLE else 'opencv'
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/ai/green-screen', methods=['POST'])
+def green_screen():
+    """Remove green screen from image or video frame"""
+    file = request.files.get('image') or request.files.get('video') or request.files.get('file')
+    if not file:
+        return jsonify({'error': 'No file provided'}), 400
+
+    tolerance = int(request.form.get('tolerance', 40))
+    feather = int(request.form.get('feather', 3))
+    key_r = int(request.form.get('key_r', 0))
+    key_g = int(request.form.get('key_g', 255))
+    key_b = int(request.form.get('key_b', 0))
+
+    raw = file.read()
+    if file.filename and file.filename.lower().endswith(('.mp4', '.webm', '.mov', '.avi')):
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4', dir=UPLOAD_FOLDER)
+        tmp.write(raw)
+        tmp.close()
+        cap = cv2.VideoCapture(tmp.name)
+        ret, frame = cap.read()
+        cap.release()
+        os.unlink(tmp.name)
+        if not ret:
+            return jsonify({'error': 'Could not read video'}), 400
+        _, buf = cv2.imencode('.jpg', frame)
+        raw = buf.tobytes()
+
+    out = apply_chroma_key(raw, key_color=(key_b, key_g, key_r), tolerance=tolerance, feather=feather)
+    if not out:
+        return jsonify({'error': 'Processing failed'}), 500
+    b64 = base64.b64encode(out).decode('utf-8')
+    return jsonify({
+        'message': 'Green screen removed',
+        'processed_image': f'data:image/png;base64,{b64}'
+    })
 
 @app.route('/api/ai/detect-plagiarism', methods=['POST'])
 def detect_plagiarism_api():
-    """Check if content is stolen"""
-    if 'image' not in request.files:
-        return jsonify({'error': 'No image provided'}), 400
-    
-    file = request.files['image']
-    img_bytes = file.read()
-    
-    content_hash = calculate_perceptual_hash(img_bytes)
-    is_stolen, original_gig_id = detect_plagiarism(content_hash)
-    
+    """Check if image or video edit is stolen"""
+    file = request.files.get('image') or request.files.get('video') or request.files.get('file')
+    if not file:
+        return jsonify({'error': 'No file provided'}), 400
+
+    raw = file.read()
+    is_video = file.filename and file.filename.lower().endswith(('.mp4', '.webm', '.mov', '.avi'))
+
+    if is_video:
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4', dir=UPLOAD_FOLDER)
+        tmp.write(raw)
+        tmp.close()
+        frame_hashes = extract_video_frame_hashes(tmp.name)
+        os.unlink(tmp.name)
+        is_stolen, original_gig_id, confidence = detect_video_plagiarism(frame_hashes)
+    else:
+        content_hash = calculate_perceptual_hash(raw)
+        is_stolen, original_gig_id = detect_plagiarism(content_hash)
+        confidence = 0.92 if is_stolen else 0.0
+
     if is_stolen:
         original_gig = Gig.query.get(original_gig_id)
         return jsonify({
             'is_plagiarized': True,
-            'confidence': 0.95,
+            'confidence': confidence,
+            'media_type': 'video' if is_video else 'image',
             'original_gig': {
                 'id': original_gig.id,
                 'title': original_gig.title,
                 'seller': original_gig.seller.username
-            }
+            } if original_gig else None
         })
-    
-    return jsonify({'is_plagiarized': False, 'confidence': 0.0})
+
+    return jsonify({
+        'is_plagiarized': False,
+        'confidence': confidence,
+        'media_type': 'video' if is_video else 'image'
+    })
+
+@app.route('/api/escrow/<int:order_id>/dispute', methods=['POST'])
+@jwt_required()
+def dispute_escrow(order_id):
+    """Buyer opens escrow dispute — funds stay held"""
+    user_id = get_jwt_identity()
+    order = Order.query.get_or_404(order_id)
+    if order.buyer_id != user_id:
+        return jsonify({'error': 'Unauthorized'}), 403
+    if order.escrow_status != 'held':
+        return jsonify({'error': 'Escrow not in held state'}), 400
+    data = request.json or {}
+    order.status = 'disputed'
+    order.buyer_message = data.get('reason', order.buyer_message or 'Dispute opened')
+    db.session.commit()
+    return jsonify({'message': 'Dispute opened. Escrow funds remain held until resolved.', 'order_id': order.id})
+
+@app.route('/api/escrow/<int:order_id>/refund', methods=['POST'])
+@jwt_required()
+def refund_escrow(order_id):
+    """Refund escrow to buyer (admin/seller agreement flow simplified)"""
+    user_id = get_jwt_identity()
+    order = Order.query.get_or_404(order_id)
+    if order.buyer_id != user_id and order.seller_id != user_id:
+        return jsonify({'error': 'Unauthorized'}), 403
+    if order.escrow_status != 'held':
+        return jsonify({'error': 'Escrow already settled'}), 400
+    buyer = User.query.get(order.buyer_id)
+    buyer.balance += order.amount
+    order.escrow_status = 'refunded'
+    order.status = 'cancelled'
+    db.session.commit()
+    return jsonify({'message': 'Escrow refunded to buyer balance'})
 
 @app.route('/api/reviews', methods=['POST'])
 @jwt_required()
@@ -849,46 +958,79 @@ def create_review():
 
 @app.route('/api/search', methods=['GET'])
 def search():
-    query = request.args.get('q', '')
+    query = request.args.get('q', '').strip()
     category = request.args.get('category', 'all')
-    min_price = request.args.get('min_price', 0)
-    max_price = request.args.get('max_price', 10000)
-    min_rating = request.args.get('min_rating', 0)
-    
+    min_price = float(request.args.get('min_price', 0))
+    max_price = float(request.args.get('max_price', 100000))
+    min_rating = float(request.args.get('min_rating', 0))
+    sort = request.args.get('sort', 'relevance')  # relevance, price_asc, price_desc, rating, orders
+    delivery_max = request.args.get('delivery_max')
+    page = int(request.args.get('page', 1))
+    per_page = int(request.args.get('per_page', 24))
+
     gigs_query = Gig.query.filter_by(is_active=True)
-    
-    if query:
-        gigs_query = gigs_query.filter(
-            (Gig.title.contains(query)) | 
-            (Gig.description.contains(query)) |
-            (Gig.tags.contains(query))
-        )
-    
+
     if category != 'all':
         gigs_query = gigs_query.filter_by(category=category)
-    
+
     gigs_query = gigs_query.filter(
-        Gig.price >= float(min_price),
-        Gig.price <= float(max_price),
-        Gig.rating >= float(min_rating)
+        Gig.price >= min_price,
+        Gig.price <= max_price,
+        Gig.rating >= min_rating
     )
-    
-    gigs = gigs_query.order_by(Gig.rating.desc(), Gig.total_orders.desc()).all()
-    
+
+    if delivery_max:
+        gigs_query = gigs_query.filter(Gig.delivery_days <= int(delivery_max))
+
+    all_gigs = gigs_query.all()
+    tokens = [t.lower() for t in re.split(r'\W+', query) if len(t) > 1]
+
+    if tokens:
+        filtered = []
+        for g in all_gigs:
+            blob = f"{g.title} {g.description} {g.tags or ''} {g.category}".lower()
+            if any(t in blob for t in tokens):
+                filtered.append(g)
+        all_gigs = filtered
+
+    scored = [(g, search_relevance_score(g, tokens)) for g in all_gigs]
+    if sort == 'price_asc':
+        scored.sort(key=lambda x: x[0].price)
+    elif sort == 'price_desc':
+        scored.sort(key=lambda x: -x[0].price)
+    elif sort == 'rating':
+        scored.sort(key=lambda x: (-x[0].rating, -x[0].total_orders))
+    elif sort == 'orders':
+        scored.sort(key=lambda x: (-x[0].total_orders, -x[0].rating))
+    else:
+        scored.sort(key=lambda x: -x[1])
+
+    start = (page - 1) * per_page
+    page_items = scored[start:start + per_page]
+
     return jsonify({
+        'query': query,
+        'total': len(scored),
+        'pages': max(1, (len(scored) + per_page - 1) // per_page),
+        'current_page': page,
         'results': [{
             'id': g.id,
             'title': g.title,
-            'description': g.description[:200],
+            'description': (g.description or '')[:200],
             'category': g.category,
             'price': g.price,
+            'delivery_days': g.delivery_days,
             'rating': g.rating,
+            'total_orders': g.total_orders,
             'thumbnail': g.thumbnail,
+            'relevance': round(score, 1),
             'seller': {
+                'id': g.seller.id,
                 'username': g.seller.username,
+                'profile_image': g.seller.profile_image,
                 'trust_score': g.seller.trust_score
             }
-        } for g in gigs]
+        } for g, score in page_items]
     })
 
 if __name__ == '__main__':

@@ -202,9 +202,10 @@ export default function Home() {
                 <p className="text-white/60 text-sm mb-6">
                   AI content fingerprinting scans the archive to flag plagiarism before listing goes live.
                 </p>
-                <button className="px-6 py-3 rounded-lg bg-white/5 text-white/40 border border-white/10 cursor-not-allowed">
-                  Coming Soon
-                </button>
+                <Link href="/ai-tools/plagiarism-detector" className="inline-flex items-center gap-2 px-6 py-3 rounded-lg bg-white text-black font-semibold hover:bg-gray-200 transition">
+                  Open Tool
+                  <ArrowRight className="w-4 h-4" />
+                </Link>
               </div>
             </div>
 
@@ -312,7 +313,7 @@ export default function Home() {
               <div className="space-y-2">
                 <Link href="/about" className="block text-sm text-white/60 hover:text-white transition">About</Link>
                 <Link href="/contact" className="block text-sm text-white/60 hover:text-white transition">Contact</Link>
-                <a href={process.env.NEXT_PUBLIC_DONATE_UPI} target="_blank" rel="noopener noreferrer" className="block text-sm text-pink-400 hover:text-pink-300 transition">
+                <a href="https://urpy.link/gkLVl4" target="_blank" rel="noopener noreferrer" className="block text-sm text-pink-400 hover:text-pink-300 transition">
                   Donate ❤️
                 </a>
               </div>

@@ -1,8 +1,11 @@
 import '../styles/globals.css';
 import { useEffect } from 'react';
 import { Toaster } from 'react-hot-toast';
+import { GoogleOAuthProvider } from '@react-oauth/google';
 import { useAuthStore } from '../lib/store';
 import { getCurrentUser } from '../lib/api';
+
+const googleClientId = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID || '000000000000-00000000000000000000000.apps.googleusercontent.com';
 
 function MyApp({ Component, pageProps }) {
   const { token, setAuth, logout } = useAuthStore();
@@ -16,7 +19,7 @@ function MyApp({ Component, pageProps }) {
   }, []);
 
   return (
-    <>
+    <GoogleOAuthProvider clientId={googleClientId}>
       <Component {...pageProps} />
       <Toaster
         position="top-right"
@@ -28,7 +31,7 @@ function MyApp({ Component, pageProps }) {
           },
         }}
       />
-    </>
+    </GoogleOAuthProvider>
   );
 }
 

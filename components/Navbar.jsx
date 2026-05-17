@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { useAuthStore } from '../lib/store';
-import { Menu, X, Search, User, LogOut, Wallet, Heart } from 'lucide-react';
+import { Menu, X, User, LogOut, Wallet, Heart } from 'lucide-react';
+import { DONATE_URL } from '../lib/api';
 
 export default function Navbar() {
   const [isOpen, setIsOpen] = useState(false);
@@ -27,7 +28,7 @@ export default function Navbar() {
           How It Works
         </Link>
         <a 
-          href={process.env.NEXT_PUBLIC_DONATE_UPI} 
+          href={DONATE_URL} 
           target="_blank" 
           rel="noopener noreferrer"
           className="flex items-center gap-2 px-4 py-2 rounded-lg bg-gradient-to-r from-pink-500 to-purple-500 text-white text-sm font-semibold hover:scale-105 transition"
@@ -125,7 +126,7 @@ export default function Navbar() {
               How It Works
             </Link>
             <a 
-              href={process.env.NEXT_PUBLIC_DONATE_UPI} 
+              href={DONATE_URL} 
               target="_blank" 
               rel="noopener noreferrer"
               className="flex items-center gap-2 px-4 py-2 rounded-lg bg-gradient-to-r from-pink-500 to-purple-500 text-white text-sm font-semibold w-fit"
